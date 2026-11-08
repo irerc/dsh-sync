@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Multi-device sync",
+    "description": "Sync DSH profiles, session records, and workspace documents bidirectionally across devices through a local folder, WebDAV, another DSH peer, or .dshsync archives; the settings page manages status, targets, roots, and import/export."
+  }
+}

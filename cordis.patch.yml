@@ -1,0 +1,6 @@
+# dsh-sync bundle 层：只插入本插件一行。
+# 运行期配置不放在这里（避免同步目标/密钥被写进 profile patch），
+# 而是保存在 $DSH_HOME/dsh-sync/config.json，由设置页与工具维护。
+- insert:
+    - id: dsh-sync
+      name: 'dsh-sync'
