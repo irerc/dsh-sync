@@ -1,6 +1,7 @@
 node_modules/
 *.dshsync
 *.tgz
+!dist/*.tgz
 coverage/
 .DS_Store
 *.log

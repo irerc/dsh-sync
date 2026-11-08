@@ -68,11 +68,14 @@ DSH（DeepSeek Harness）的多设备同步插件：把**用户选定的本地�
 | GitHub git | `https://github.com/irerc/dsh-sync.git` | 能访问 `github.com:443` |
 | codeload tag tarball | `https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.1.0` | `github.com` 被阻断但 `codeload.github.com` 可达；pnpm 可直接安装 |
 | Release 资产 | `https://github.com/irerc/dsh-sync/releases/download/v1.1.0/dsh-sync-1.1.0.tgz` | 能访问 `github.com`；也可手动下载后在本地安装 |
+| raw tarball（GUI 兼容） | `https://raw.githubusercontent.com/irerc/dsh-sync/main/dist/dsh-sync-1.1.0.tgz` | `github.com` 被阻断但 `raw.githubusercontent.com` 可达；URL 以 `.tgz` 结尾，插件管理器可直接识别 |
 
 本机（`github.com:443` 被阻断、`codeload.github.com` 可达）实测通过的 CLI：
 
 ```bash
 dsh plugin --profile web add https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.1.0
+# 或：raw tarball（GUI 安装也接受这个 URL）
+dsh plugin --profile web add https://raw.githubusercontent.com/irerc/dsh-sync/main/dist/dsh-sync-1.1.0.tgz
 ```
 
 > `v4.gh-proxy.org` 的 git 只读 `ls-remote` 可用，但 `git clone` 实测返回 403；因此**优先用 codeload tarball**，不要依赖镜像 clone。
