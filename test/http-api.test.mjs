@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto'
 import { SyncStore } from '../lib/state.js'
 import { SyncEngine } from '../lib/engine/engine.js'
 import { attachRoutes } from '../lib/http-api.js'
+import { decodePairing, encodePairing } from '../lib/pair.js'
 import { createBackend } from '../lib/backends/index.js'
 import { createDeviceManifest } from '../lib/engine/manifest.js'
 import { parseArchive } from '../lib/engine/archive.js'
@@ -211,6 +212,41 @@ test('HTTP API：状态/配置掩码/测试/同步/导出下载/导入/同源', 
   })
   assert.equal(imported.status, 200)
   assert.equal(imported.body.ok, true)
+
+  // 一键配对码：本机 peer 生成 + 粘贴 webdav 码后新增 target
+  const codeResponse = await call(harness.origin, '/dsh-sync/api/pair/code')
+  assert.equal(codeResponse.status, 200)
+  assert.ok(codeResponse.body.code.startsWith('DSHSYNC1.'))
+  const selfPayload = decodePairing(codeResponse.body.code)
+  assert.equal(selfPayload.type, 'peer')
+  assert.equal(selfPayload.token, device.engine.config.peerToken)
+  assert.ok(selfPayload.url.endsWith('/dsh-sync/v1'))
+  assert.equal((await call(harness.origin, '/dsh-sync/api/pair/code', { noToken: true })).status, 401)
+
+  const webdavCode = encodePairing({
+    v: 1,
+    type: 'webdav',
+    url: 'https://dav.example.com/remote.php/dav/files/alice',
+    username: 'alice',
+    password: 'pair-secret',
+    basePath: '/dsh-sync',
+    label: '配对云盘',
+  })
+  const applied = await call(harness.origin, '/dsh-sync/api/pair', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: webdavCode, sync: false }),
+  })
+  assert.equal(applied.status, 200)
+  assert.equal(applied.body.ok, true)
+  const paired = applied.body.status.targets.find((item) => item.type === 'webdav' && item.label === '配对云盘')
+  assert.ok(paired, '配对后必须出现 webdav target')
+  assert.equal(paired.password, '***')
+  assert.equal((await call(harness.origin, '/dsh-sync/api/pair', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code: 'not-a-code' }),
+  })).status, 400)
   assert.equal(await fsp.readFile(path.join(device.root, 'hello.txt'), 'utf8'), 'hello api')
   const files = await fsp.readdir(device.root)
   assert.ok(files.some((name) => name.includes('.conflict-local-')))

@@ -328,3 +328,18 @@ tests 61 / pass 61 / fail 0
 网络实测：本机 `github.com:443` 连接超时；`api.github.com`、`codeload.github.com`、`raw.githubusercontent.com`、`uploads.github.com` 可达。`v4.gh-proxy.org` 的 `git ls-remote` 可用，但 `git clone` 返回 403，因此安装文档优先 codeload tarball。
 
 推送方式：因 `git push`（github.com）被阻断，使用 GitHub Git Data API（blobs → tree → commit → ref）发布；release 资产经 `uploads.github.com` 上传。
+
+---
+
+## 12. 一键配对码验证（2026-11-08，1.2.0）
+
+| 检查 | 结果 |
+|---|---|
+| 单元测试 | `test/pair.test.mjs` 5/5：peer/webdav 往返、非法前缀/版本/类型/URL/token/子路径、协议根不重复拼接、回环→LAN |
+| HTTP 测试 | `test/http-api.test.mjs` 3/3：无 token 401、生成 peer 码（token 与 config 一致）、粘贴 webdav 码新增 target、坏码 400 |
+| 线上生成 | `GET /api/pair/code` → 200，码内 URL 为 LAN `192.168.31.158`，`warning` 提示需 `--host 0.0.0.0` |
+| 坏 target | `GET /api/pair/code?targetId=dav`（空地址）→ 400 `该 target 还没有有效地址` |
+| 线上粘贴 | `POST /api/pair`（webdav 码，sync:false）→ 200，新增 `dav-2`；再取该 target 码可解析回原值；清理后 targets 恢复 `local/dav/peer` |
+| 全量 | `node --test test/*.test.mjs` → **66/66** |
+
+UI：`Targets` 类型下拉与列表均 WebDAV 优先；每个 WebDAV/peer target 卡片有“复制配对码”；Peer 区有“复制本机配对码 + 粘贴 + 连接并同步”。
