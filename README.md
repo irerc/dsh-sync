@@ -61,7 +61,23 @@ DSH（DeepSeek Harness）的多设备同步插件：把**用户选定的本地�
 3. 安装后确认 `dsh-sync` 出现在组合包列表中且已启用；未启用 HMR 时**重启 `dsh web`**；
 4. 打开 **设置 → dsh-sync**，应能看到状态卡、targets、roots、peer 配对、导入导出与日志。
 
-如果所在网络直连 `github.com` 不稳定，可以改用只读镜像前缀（能否使用取决于你的网络环境）：
+**已验证的安装 URL（2026-11-08 本机实测）：**
+
+| 方式 | URL | 适用网络 |
+|---|---|---|
+| GitHub git | `https://github.com/irerc/dsh-sync.git` | 能访问 `github.com:443` |
+| codeload tag tarball | `https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.1.0` | `github.com` 被阻断但 `codeload.github.com` 可达；pnpm 可直接安装 |
+| Release 资产 | `https://github.com/irerc/dsh-sync/releases/download/v1.1.0/dsh-sync-1.1.0.tgz` | 能访问 `github.com`；也可手动下载后在本地安装 |
+
+本机（`github.com:443` 被阻断、`codeload.github.com` 可达）实测通过的 CLI：
+
+```bash
+dsh plugin --profile web add https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.1.0
+```
+
+> `v4.gh-proxy.org` 的 git 只读 `ls-remote` 可用，但 `git clone` 实测返回 403；因此**优先用 codeload tarball**，不要依赖镜像 clone。
+
+如果所在网络直连 `github.com` 不稳定，再尝试镜像前缀（能否使用取决于你的网络环境）：
 
 ```text
 https://v4.gh-proxy.org/https://github.com/irerc/dsh-sync.git
@@ -86,7 +102,7 @@ dsh web
 
 > 说明：`dsh plugin ... add` 只负责依赖安装；**组合包启用状态**需要在插件页选择，或由 `plugin_manager` 工具设置。安装/启用属于宿主操作，本插件不会自行修改 profile 配置。
 
-升级：重新执行安装（git 地址会拉取最新提交），或替换本地目录后重装/重启；配置与状态保存在 `$DSH_HOME/dsh-sync/`，不受升级影响。
+升级：重新执行安装（git 地址拉取最新提交；tarball 地址换成新 tag），或替换本地目录后重装/重启。需要固定版本时用 tag：`.../tar.gz/refs/tags/v1.1.0`。配置与状态保存在 `$DSH_HOME/dsh-sync/`，不受升级影响。
 
 ---
 

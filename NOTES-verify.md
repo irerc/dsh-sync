@@ -309,3 +309,22 @@ tests 61 / pass 61 / fail 0
 ### 10.5 仍未覆盖
 
 浏览器视觉/按钮真实点击、真实 WebDAV 服务、跨公网/非 localhost 网络、Windows/macOS 文件语义、真实 512 MiB 归档。设置页需要刷新一次页面才能加载新客户端 bundle。
+
+---
+
+## 11. GitHub 发布验证（2026-11-08）
+
+| 项 | 结果 |
+|---|---|
+| 仓库 | `https://github.com/irerc/dsh-sync`（public，default `main`） |
+| 发布提交 | `ec10aa7b6fdf3a6190f1e4d23393bed8e55033b8` |
+| 文件数 | 41 个 blob（API `git/trees?recursive=1` 核对） |
+| tag / release | `v1.1.0`；release 资产 `dsh-sync-1.1.0.tgz`（90140 B，sha256 `4e1f2f8a…4c2529`） |
+| 内容一致性 | codeload `tar.gz/refs/heads/main` 解包后与本地 `diff -r` **无差异**；`package.json` API 内容 sha256 与本地一致 |
+| 安装链路 A | `pnpm add https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.1.0` → `+ dsh-sync 1.1.0`，`import('dsh-sync')` 返回 `name/apply` |
+| 安装链路 B | release 资产经 API 下载，sha256 与本地 tarball 完全一致；本地 tarball 在隔离目录安装 + import 通过 |
+| 安装链路 C | release 资产 URL（需 `github.com` 可达）；git URL（需 `github.com:443`） |
+
+网络实测：本机 `github.com:443` 连接超时；`api.github.com`、`codeload.github.com`、`raw.githubusercontent.com`、`uploads.github.com` 可达。`v4.gh-proxy.org` 的 `git ls-remote` 可用，但 `git clone` 返回 403，因此安装文档优先 codeload tarball。
+
+推送方式：因 `git push`（github.com）被阻断，使用 GitHub Git Data API（blobs → tree → commit → ref）发布；release 资产经 `uploads.github.com` 上传。
