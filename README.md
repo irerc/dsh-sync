@@ -230,6 +230,17 @@ dsh web
 
 > 配对码等同于密码：内含 WebDAV 密码或 peer token，只发给可信设备；Host 不写日志。同一 target 会按类型 + 地址 + 用户名去重，重复粘贴不会产生重复项。
 
+**也可以直接对 Agent 说**：
+
+```text
+帮我配置 WebDAV 同步：地址 https://cloud.example.com/remote.php/dav/files/alice
+账号 alice，应用密码 xxxx-xxxx-xxxx，子路径 /dsh-sync
+```
+
+Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即同步 → 汇报真实统计；同一地址+用户名再次配置时更新原 target，不会重复新增。也可以把配对码直接发给 Agent，由它调用 `dsh_sync_pair`。
+
+> 注意：口述的密码会进入本次对话的模型上下文。请使用**应用密码/专用密码**，不要用主账号密码；配置完成后可随时在服务端撤销该应用密码。
+
 ### 6.2 手动配置（备用）
 
 
@@ -285,7 +296,9 @@ dsh web
 |---|---|---|
 | `dsh_sync_status` | 无 | 返回设备、targets、上次结果、冲突数与待处理提示。 |
 | `dsh_sync_run` | `mode?: 'auto'\|'push'\|'pull'`、`targetId?` | 执行同步，返回每个 target 的报告。 |
-| `dsh_sync_export` | `targetId?`（仅命名用） | 导出 `.dshsync` 到 `$DSH_HOME/dsh-sync/exports/`，返回绝对路径/大小。 |
+| `dsh_sync_configure` | `type`、`url`、`username`、`password`、`basePath?`、`path?`、`token?`、`sync?`、`targetId?` | 按口述信息新增/更新 target，默认测试连接并同步；同地址+用户名更新而非重复。 |
+| `dsh_sync_pair` | `code`、`sync?` | 解析 `DSHSYNC1.` 配对码，新增/更新 target，默认测试并同步。 |
+| `dsh_sync_export` | 无 | 导出 `.dshsync` 到 `$DSH_HOME/dsh-sync/exports/`，返回绝对路径/大小。 |
 | `dsh_sync_import` | `path: string` | 导入本地 `.dshsync` 文件，返回合并报告。 |
 
 工具输出为字符串（含结构化摘要），失败时抛可读错误。

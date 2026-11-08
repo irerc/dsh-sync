@@ -341,6 +341,8 @@ Peer 服务端存储：`createBackend({ type:'local', path: config.peerStorePath
 |---|---|---|
 | `dsh_sync_status` | 无 | 返回设备、targets、上次结果、冲突数、待处理提示 |
 | `dsh_sync_run` | `mode?: 'auto'\|'push'\|'pull'`, `targetId?: string` | 执行同步，返回每个 target 的报告 |
+| `dsh_sync_configure` | `type:'webdav'\|'peer'\|'local'`, `url?`, `username?`, `password?`, `basePath?`, `token?`, `path?`, `label?`, `sync?`, `targetId?` | 按口述信息新增/更新 target；同类型+地址（WebDAV 再加用户名）去重；默认 testTarget + sync；输出不回显密码/token |
+| `dsh_sync_pair` | `code: string`, `sync?: boolean` | 解析 `DSHSYNC1.` 配对码并应用，默认测试 + 同步 |
 | `dsh_sync_export` | `targetId?`（可选，仅命名用） | 导出 `.dshsync` 到 `$DSH_HOME/dsh-sync/exports/`，返回绝对路径/大小 |
 | `dsh_sync_import` | `path: string` | 导入本地 `.dshsync` 文件，返回合并报告 |
 

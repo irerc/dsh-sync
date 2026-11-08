@@ -343,3 +343,17 @@ tests 61 / pass 61 / fail 0
 | 全量 | `node --test test/*.test.mjs` → **66/66** |
 
 UI：`Targets` 类型下拉与列表均 WebDAV 优先；每个 WebDAV/peer target 卡片有“复制配对码”；Peer 区有“复制本机配对码 + 粘贴 + 连接并同步”。
+
+---
+
+## 13. Agent 口述配置验证（2026-11-08，1.2.0）
+
+| 检查 | 结果 |
+|---|---|
+| 工具注册 | 线上 Tool 列表含 `dsh_sync_configure`、`dsh_sync_pair`（另有 status/run/export/import，共 6 个） |
+| 单元测试 | `test/tools.test.mjs` 2/2：真实 Engine + 假 tools 服务，configure 本地目标后连接测试成功；非法 webdav URL / 非法 type / 坏配对码均拒绝 |
+| 去重 | `connectTarget` 同类型+地址（WebDAV 再加用户名）更新原 target；`targetId` 可显式更新 |
+| 凭据 | 工具输出与 status 均不返回 password/token 明文；配对码由 Host 解析，Agent 只回传结果摘要 |
+| 全量 | `node --test test/*.test.mjs` → **68/68** |
+
+用法：用户直接说“帮我配置 WebDAV：地址 … 账号 … 应用密码 … 子路径 …”，Agent 调 `dsh_sync_configure` 自动新增 target → 测试连接 → 立即同步并汇报真实统计；用户粘贴配对码时调 `dsh_sync_pair`。
