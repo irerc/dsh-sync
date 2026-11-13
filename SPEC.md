@@ -415,6 +415,15 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 - 不确定的实现选择写进 `NOTES-<name>.md`，不要静默猜测。
 ## 13. 口径修订（CHANGELOG）
 
+- 2026-11-13（1.4.1，独立复核修复）：
+  - Peer `writeObject` 并发去重的后来者改为返回 `{skipped:true, storedBytes:0}`；此前返回首调用的完整
+    `storedBytes`，`wireBytesUp` 会按调用次数虚增（实测 5 并发：实际 100B 记成 500B）。
+  - Peer 对象清单要求 `ok === true`；`{ok:false, hashes:[]}` 的 200 响应不再被当成“完整空索引”。
+  - WebDAV `readObject`：`.z` 解压失败时记录 warn 并回退到 raw 形态，不再整对象判死。
+  - WebDAV 解压统一走异步 zlib（压缩后体积不能代表解压后体积，高压缩比 1MiB→32MiB 会卡主线程）。
+  - WebDAV `listDevices` 遇到 404 时清除 init 缓存，`devices/` 被外部删除后可自愈（此前最长卡 TTL 5 分钟）。
+  - Local `listObjects` 只列原始 `<hash>` 对象（不把 `<hash>.z` 归一成 hash），避免 peer 清单声称存在但 GET 404。
+
 - 2026-11-13（1.4.0 上传加速）：对象探测从“每对象 2 次 HEAD”降为 0~1 次：
   `engine.putObject` 不再先探测（探测统一由后端负责），WebDAV 用一次 `PROPFIND objects/` 建索引，
   Peer 用新增的 `GET /v1/objects` 建索引。实测 200 文件 / RTT 150ms 场景请求数 605 → 203，耗时 98.7s → 9.1s。

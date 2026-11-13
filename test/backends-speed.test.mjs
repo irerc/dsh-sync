@@ -49,6 +49,8 @@ function makeDav({ propfindObjects = 'ok' } = {}) {
       return new Response(null, { status: 201 })
     }
     if (method === 'PROPFIND') {
+      // 目录被删掉时真实服务器返回 404；mock 也要一致，否则测不到自愈路径
+      if (!dirs.has(pathname.replace(/\/$/, ''))) return new Response(null, { status: 404 })
       if (pathname === `${base}/objects/`) {
         if (propfindObjects !== 'ok') return new Response('nope', { status: propfindObjects })
         return new Response(listObjectsXml(), { status: 207 })
@@ -294,4 +296,99 @@ test('webdav：gzip 字节确实是 gzip 格式（服务端可解）', async () 
   assert.equal(stored[0], 0x1f)
   assert.equal(stored[1], 0x8b)
   assert.ok(stored.byteLength <= gzipSync(REPEATABLE).byteLength)
+})
+/* ------------------------------------------------------------------ */
+/* 复核发现的缺陷回归（v1.4.1）                                          */
+/* ------------------------------------------------------------------ */
+
+test('peer：同 hash 并发写，后来者必须记为跳过且不虚增实传字节', async () => {
+  const peer = makePeer()
+  const backend = peerBackend(peer)
+  await backend.init()
+  const hash = sha256(REPEATABLE)
+  const results = await Promise.all(
+    Array.from({ length: 5 }, () => backend.writeObject(hash, REPEATABLE)),
+  )
+  assert.equal(count(peer.requests, 'PUT'), 1, '只应发一次 PUT')
+  const uploaded = results.filter((item) => item.skipped === false)
+  assert.equal(uploaded.length, 1, '只有真正发 PUT 的那次 skipped=false')
+  const sum = results.reduce((total, item) => total + (item.storedBytes ?? 0), 0)
+  assert.equal(sum, REPEATABLE.byteLength, '实传字节必须只计一次，不能按调用次数翻倍')
+  // skipped 的返回值不能带 size，否则统计口径仍然会漂
+  for (const item of results.filter((r) => r.skipped === true)) assert.equal(item.storedBytes, 0)
+})
+
+test('peer：HTTP 200 但 ok!==true 的清单不可信，回退单次 HEAD', async () => {
+  const peer = makePeer()
+  const original = peer.fetchImpl
+  peer.fetchImpl = async (url, init = {}) => {
+    const { pathname } = new URL(url)
+    if (pathname === '/dsh-sync/v1/objects' && String(init.method ?? 'GET').toUpperCase() === 'GET') {
+      peer.requests.push({ method: 'GET', pathname })
+      return Response.json({ ok: false, error: 'unsupported', hashes: [] })
+    }
+    return original(url, init)
+  }
+  const backend = peerBackend(peer)
+  await backend.init()
+  const hash = sha256(REPEATABLE)
+  const before = peer.requests.length
+  await backend.writeObject(hash, REPEATABLE)
+  assert.equal(count(peer.requests.slice(before), 'HEAD'), 1, '不可信清单必须回退 HEAD')
+})
+
+test('webdav：.z 损坏且存在 raw 副本时回退读 raw（不判死）', async () => {
+  const logs = []
+  const dav = makeDav()
+  const raw = Buffer.from('{"recovered":true}', 'utf8')
+  const hash = sha256(raw)
+  // 索引会优先 gz；放一个损坏的 .z 和一份完好的 raw
+  dav.files.set(`${dav.base}/objects/${hash}.z`, Buffer.from('not-a-gzip-stream'))
+  dav.files.set(`${dav.base}/objects/${hash}`, raw)
+  const backend = davBackend(dav, { logger: { info() {}, warn: (m) => logs.push(m), error() {} } })
+  await backend.init()
+  const bytes = await backend.readObject(hash)
+  assert.deepEqual(Buffer.from(bytes), raw, '应回退到 raw 并返回原始字节')
+  assert.ok(logs.some((m) => String(m).includes('解压失败')), '应留下可读告警')
+})
+
+test('local：listObjects 不把 <hash>.z 归一成可读对象', async () => {
+  const { createLocalBackend } = await import('../lib/backends/local.js')
+  const os = await import('node:os')
+  const path = await import('node:path')
+  const fsp = await import('node:fs/promises')
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-listspeed-'))
+  try {
+    const backend = createLocalBackend({ id: 'l', type: 'local', path: dir }, { logger: silentLogger })
+    await backend.init()
+    const raw = Buffer.from('raw-object', 'utf8')
+    const hash = sha256(raw)
+    await backend.writeObject(hash, raw)
+    // 手工放一个 .z（模拟从 WebDAV 镜像过来的目录）：local 读不出它，就不该上报
+    await fsp.writeFile(path.join(dir, 'objects', `${hash}.z`), Buffer.from([0x1f, 0x8b, 0x00]))
+    const listed = await backend.listObjects()
+    assert.deepEqual(listed, [hash], '只列真能读的 raw 对象')
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('webdav：devices/ 被外部删除后能清缓存自愈（不卡满 5 分钟）', async () => {
+  const dav = makeDav()
+  const backend = davBackend(dav)
+  await backend.init()
+  assert.ok(dav.dirs.has(`${dav.base}/devices`))
+
+  // 模拟服务端被清理：删掉 devices 目录（并清空其中文件）
+  dav.dirs.delete(`${dav.base}/devices`)
+  for (const path of [...dav.files.keys()]) {
+    if (path.startsWith(`${dav.base}/devices/`)) dav.files.delete(path)
+  }
+  assert.deepEqual(await backend.listDevices(), [], '目录不在时按空列表处理')
+
+  // 下一次 init 必须重走 MKCOL 把目录建回来（而不是靠缓存空转）
+  const before = count(dav.requests, 'MKCOL')
+  await backend.init()
+  assert.ok(count(dav.requests, 'MKCOL') > before, '应重新 MKCOL')
+  assert.ok(dav.dirs.has(`${dav.base}/devices`), 'devices 目录应被重建')
 })

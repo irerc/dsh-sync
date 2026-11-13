@@ -435,3 +435,52 @@ UI：`Targets` 类型下拉与列表均 WebDAV 优先；每个 WebDAV/peer targe
 | 回归守卫 | `test/e2e.test.mjs` 断言 `HEAD 次数 ≤ 对象 PUT 次数`（旧实现每对象 2 次 HEAD 会直接失败） |
 | 打包 | `npm pack` → `dist/dsh-sync-1.4.0.tgz`；`bench/` 不进包（27 个文件） |
 | 安装验证 | 临时目录 `npm install dist/dsh-sync-1.4.0.tgz` → `import('dsh-sync')` 正常，`version=1.4.0` |
+
+### 15.6 真实链路上限的实测与结论边界（诚实记录）
+
+本机 `dav` target 指向真实 123pan WebDAV。这一节记录“优化到了哪里、还剩什么是客户端改不动的”。
+
+| 测量 | 数值 | 说明 |
+|---|---|---|
+| 单次 3.5MB `PUT` | 265 KB/s（13.5s） | 探测数据，测时插件同时在传 3.5MB 会话文件，属**上界不可信**；同轮 4×0.875MB 并行得到 95 KB/s，因共享同一带宽，**不能**据此判定“并发无用” |
+| 每 20s 自动保存 | `[dav] push 完成：↑1 …（15.9s，221 KiB/s）` | 同一份 `session.v4.jsonl.zstd`（3.5MB，本身已 zstd 压缩）每个周期整份重传 |
+| 该对象压缩收益 | `wireBytesUp == bytesUp` | `.zstd` 已是压缩格式，gzip 正确地不重复压（符合设计） |
+
+结论边界（不夸大）：
+
+1. 客户端可控的三项已拿满：探测 2×HEAD → 0（`bench` 中 605→203 请求）、小对象并发、未压缩文本 gzip −92.9%。
+2. **单个大文件 + 低带宽链路**是带宽问题，客户端无法靠并发/压缩改善；若服务端按账号或连接限速，把并发调低（设置页 1–2）比调高更稳。
+3. 真正的用量级改善来自“少传重复整份文件”：把**自动保存间隔**从 20s 提到 120s，可把同一成长型会话文件的重传次数砍到 1/6。
+   已在本机线上改为 120s（`autoSaveIntervalSeconds=120`，可在设置页随时改回）。
+4. 测量纪律：压测前必须确认插件 `busy=false`，否则测到的是“与自动同步抢带宽”。本轮第一组探测即因此作废，已重测并在上表标注。
+
+清理：探测用的 `.probe-*` 对象全部删除（4 个 204）；未在用户远端留下任何探测残留。
+
+### 15.7 独立复核发现的缺陷与修复（1.4.1）
+
+5 个智能体重启后只读复核，3 位回报（archive-dev 无问题；backends-dev 报 5 条；bench-dev 复核基准口径）。逐条修掉：
+
+| 级别 | 缺陷（证据） | 修复 |
+|---|---|---|
+| P2 | Peer 并发去重的后来者返回首调用的完整 `storedBytes`：实测 5 并发只传 100B，`wireBytesUp` 记 500B | 后来者改返回 `{skipped:true, storedBytes:0}`，与 WebDAV 对齐 |
+| P2 | Peer 清单 `{ok:false, hashes:[]}` 的 200 响应被当成“完整空索引” | 要求 `data.ok === true`，否则回退单次 HEAD |
+| P2 | WebDAV `.z` 损坏时直接抛错，即使同 hash 有完好 raw 副本 | 解压失败记 warn、删索引项、回退下一形态 |
+| P2 | 解压用**压缩后**体积判断同步/异步：1MiB 的高压缩比 `.z` 解压成 32MiB 会阻塞事件循环 | 解压一律异步 zlib |
+| P2 | `devices/` 被外部删除后，init 缓存命中导致每轮失败，最长卡满 TTL 5 分钟 | `listDevices` 404 → `initCache.delete(initCacheKey())`，下次 init 重走 MKCOL |
+| P3 | `local.listObjects` 把 `<hash>.z` 归一成 hash，peer 清单会声称存在而 GET 404 | 只列原始 `<hash>` |
+
+新增 5 条回归测试（`test/backends-speed.test.mjs`，共 16 条）：
+
+| 用例 | 断言 |
+|---|---|
+| peer 5 并发同 hash | 1 次 PUT；`sum(storedBytes) == 原始字节` |
+| peer `ok:false` 清单 | 回退 1 次 HEAD |
+| webdav 损坏 `.z` + 完好 raw | 读回 raw 原始字节 + 有告警 |
+| local `.z` 不入清单 | `listObjects` 只返回 raw hash |
+| devices/ 被删 | `listDevices` → []，下次 `init` 重新 MKCOL 并重建目录 |
+
+全量：`node --test test/*.test.mjs` → **97/97**。
+
+发布元数据澄清（archive-dev 提出）：本地 HEAD 与远端 commit 哈希必然不同——推送走 Git Data API（`github.com:443` 被阻断），
+服务端重算 commit sha，本地是 `743eda8`、远端是 `781de3fa`，内容一致（`raw` 拉取 `package.json` 得到 1.4.0）。
+1.4.1 起同样处理，并在本地补打 tag 以便 `git describe` 可用。
