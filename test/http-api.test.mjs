@@ -247,6 +247,24 @@ test('HTTP API：状态/配置掩码/测试/同步/导出下载/导入/同源', 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code: 'not-a-code' }),
   })).status, 400)
+
+  // 快速连接：地址/账号/密码三项即可（此处用 local 验证同一 connectTarget 链路）
+  const quickPath = path.join(device.root, 'quick-local')
+  const quick = await call(harness.origin, '/dsh-sync/api/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'local', label: '快速连接', path: quickPath, sync: false }),
+  })
+  assert.equal(quick.status, 200)
+  assert.equal(quick.body.ok, true)
+  assert.equal(quick.body.test.ok, true)
+  assert.ok(quick.body.status.targets.some((item) => item.label === '快速连接'))
+  const badQuick = await call(harness.origin, '/dsh-sync/api/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'webdav', url: 'ftp://example.com', username: 'u', password: 'p' }),
+  })
+  assert.equal(badQuick.status, 400)
   assert.equal(await fsp.readFile(path.join(device.root, 'hello.txt'), 'utf8'), 'hello api')
   const files = await fsp.readdir(device.root)
   assert.ok(files.some((name) => name.includes('.conflict-local-')))

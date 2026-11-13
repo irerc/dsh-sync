@@ -291,6 +291,7 @@ Peer 路由必须校验 `x-dsh-sync-token === config.peerToken`，否则 401。
 | `GET /api/download/<id>` | 下载归档（`application/gzip`，attachment） |
 | `POST /api/import` | 原始 `.dshsync` 字节；`x-filename` 可选。返回 `{ ok, report }` |
 | `GET /api/pair/code?targetId=<id>` | 生成一键配对码。无 `targetId` 时为本机 peer（回环地址自动替换为局域网 IP，并返回 `warning`）；指定 `targetId` 时导出该 WebDAV/peer target 的完整连接信息。返回 `{ ok, code, summary, warning }` |
+| `POST /api/connect` | body 直接给 target 字段 `{ type, url?, username?, password?, basePath?, path?, token?, label?, sync? }`；调用 `connectTarget` 去重后新增/更新，默认测试+同步。返回与 `/api/pair` 同形 |
 | `POST /api/pair` | body `{ code, sync?: boolean }`。解析 `DSHSYNC1.` 码，按类型+地址+用户名去重后新增/更新 target；默认测试连接并同步。返回 `{ ok, target, test, report, error, warnings, status }`；码无效 400 |
 | `GET /api/logs` | `{ ok, logs, conflicts }` |
 
@@ -409,5 +410,6 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 - 2026-11-08：`webServer` 自定义路由不经过 DSH 浏览器鉴权，`/api/*` 增加 `x-dsh-sync-ui-token` 强制校验；token 仅注入受保护的 index。
 - 2026-11-08：扫描把“排除/超大/链接/读失败/禁用或未知根目录”记为 ignored，合并时既不当成本地删除也不写墓碑，避免误删其他设备副本；`maxFileBytes` 默认 32 MiB。
 - 2026-11-08：导出先读取实际字节并重建 hash/size，修复“扫描后文件被追加导致对象 sha256 不匹配”的 500；下载只认 UI token 请求头。
+- 2026-11-08：新增 `/api/connect` 与设置页「WebDAV 快速开始」（仅 url/username/password，basePath 默认 `/dsh-sync`，保存即测试并同步）；WebDAV 卡片置于页面最上方。
 - 2026-11-08：新增一键配对码 `DSHSYNC1.<base64url>`（peer / webdav），`GET /api/pair/code` + `POST /api/pair`，UI 支持复制/粘贴后自动新增 target 并同步；target 类型与列表改为 WebDAV 优先。
 - 2026-11-08：`GET /api/status` 的 `targets[]` 同时包含非密字段（path/url/username/basePath），密钥字段以 `"***"` 或空串返回。

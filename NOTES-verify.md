@@ -357,3 +357,16 @@ UI：`Targets` 类型下拉与列表均 WebDAV 优先；每个 WebDAV/peer targe
 | 全量 | `node --test test/*.test.mjs` → **68/68** |
 
 用法：用户直接说“帮我配置 WebDAV：地址 … 账号 … 应用密码 … 子路径 …”，Agent 调 `dsh_sync_configure` 自动新增 target → 测试连接 → 立即同步并汇报真实统计；用户粘贴配对码时调 `dsh_sync_pair`。
+
+---
+
+## 14. WebDAV 快速开始验证（2026-11-13，1.3.0）
+
+| 检查 | 结果 |
+|---|---|
+| UI 位置 | `SyncSection` 渲染顺序：**WebdavQuickCard 第一** → 状态卡 → Targets（WebDAV 类型/列表仍置顶） |
+| 必填项 | 快速卡只要求 地址 / 账号 / 应用密码；`basePath` 固定默认 `/dsh-sync`，label 默认 `WebDAV` |
+| 一键动作 | 提交调用 `POST /api/connect` → `engine.connectTarget` 去重/新增 → `testTarget` → 成功则 `sync`，结果就地显示 |
+| 线上非法 | `POST /api/connect`（`ftp://`）→ 400 `webdav 的 url 必须是 http(s) 地址` |
+| 线上合法 | `POST /api/connect`（https + 账号 + 密码，sync:false）→ 200，新增 `dav-2`、test=false（示例域名不可达），清理后 targets 恢复 `local/dav/peer` |
+| 测试 | `node --test test/*.test.mjs` → 68/68；新增 connect 断言（成功 + 非法 400） |
