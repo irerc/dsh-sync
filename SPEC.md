@@ -145,6 +145,8 @@ key = `${rootId}/${relativePosixPath}`
   "autoSaveIntervalSeconds": 20,
   "autoSyncIntervalSeconds": 180,
   "maxFileBytes": 33554432,
+  "concurrency": 4,
+  "compressObjects": true,
   "peerToken": "随机 32 hex",
   "peerStorePath": "$DSH_HOME/dsh-sync/peer-store",
   "roots": [
@@ -176,7 +178,8 @@ key = `${rootId}/${relativePosixPath}`
     "local": {
       "base": { "profile/cordis.patch.yml": { "hash": "...", "size": 1, "mtimeMs": 2, "updatedAt": 3 } },
       "lastSyncAt": 0,
-      "lastResult": { "ok": true, "pulled": 0, "pushed": 0, "deletedLocal": 0, "tombstoned": 0, "conflicts": 0, "skipped": 0, "durationMs": 0 }
+      "lastResult": { "ok": true, "pulled": 0, "pushed": 0, "deletedLocal": 0, "tombstoned": 0, "conflicts": 0, "skipped": 0,
+                      "skippedUploads": 0, "wireBytesUp": 0, "bytesPerSecond": 0, "durationMs": 0 }
     }
   },
   "logs": [ { "at": 0, "level": "info", "message": "..." } ],
@@ -225,11 +228,18 @@ export async function createBackend(target, options = {}) // => SyncBackend
 - 配置：`url`（如 `https://dav.example.com/remote.php/dav/files/u`）、`username`、`password`、`basePath`（默认 `/dsh-sync`）。
 - 最终根 = `url` 去尾斜杠 + basePath（确保 `/`）。
 - 认证：`Authorization: Basic base64(user:pass)`。
-- `init`：对根与 `devices`、`objects` 逐级 `MKCOL`（405 视为已存在）。
+- `init`：对根与 `devices`、`objects` 逐级 `MKCOL`（405 视为已存在）；MKCOL 链结果按 `root|user|compress` 缓存 5 分钟
+  （快速连接流程 `test()` → `sync()` 不重复建目录）。随后 `PROPFIND objects/`（`Depth: 1`）**一次建立对象索引**。
 - `writeManifest`：`PUT`；`readManifest`：`GET`，404→null。
 - `listDevices`：`PROPFIND` `devices/`，`Depth: 1`；解析 `<d:href>` / `<href>`，取以 `.json` 结尾的 basename，URL 解码。
-- `hasObject`：`HEAD objects/<hash>`，200/204→true，404→false。
-- `writeObject`：先 `hasObject`，不存在再 PUT。
+- 对象存储两种形态，均以原始内容 sha256 命名：
+  - `objects/<hash>`：原始字节（不可压缩内容、或 `compressObjects=false`、或 1.3.0 及更早写入）；
+  - `objects/<hash>.z`：gzip 字节（`Content-Type: application/gzip`），仅当压缩后 < 原始 90% 且原始 ≥ 512 B。
+- `hasObject`：索引可用 → 内存查询（0 往返）；索引不可用（PROPFIND 404/405/501 或解析失败）→ 单次 `HEAD`。
+- `writeObject`：索引命中 → 跳过；未命中 → **单次 `PUT`**（不再先探测）。同 hash 并发调用共享同一 Promise，最多一次 PUT。
+- `readObject`：按索引记录的形态 `GET`，`.z` 自动 gunzip 还原**原始字节**；404 时删除过期索引并换另一种形态重试一次。
+  索引不可用时先试 `.z` 再试 raw（兼容旧对象）。
+- 大对象（≥ 4 MiB）压缩/解压走异步 zlib，避免阻塞 Host 事件循环。
 - 超时：每次请求 `AbortSignal.timeout(60_000)`；4xx/5xx 抛带状态码的错误。
 - `test`：MKCOL 根 + 写/读/删一个小探测文件（失败不抛）。
 
@@ -242,7 +252,10 @@ export async function createBackend(target, options = {}) // => SyncBackend
 - `GET devices` → `{ devices: string[] }`。
 - `GET devices/<id>` → manifest JSON；404→null。
 - `PUT devices/<id>` → `{ ok:true }`。
+- `GET objects` → `{ ok, total, truncated, hashes: string[] }`（最多 50000 条）；旧对端无此端点时返回 404。
 - `HEAD objects/<hash>`；`GET/PUT objects/<hash>`（PUT body 原始字节，`content-type: application/octet-stream`）。
+- 对象索引：`init` 时用 `GET objects` 一次性拉全量 hash。成功则逐对象 0 次 HEAD；
+  端点缺失（404/405/501）或 `truncated:true` 时回退单次 HEAD（索引不完整时宁可多一次往返，也不误判）。
 - 401 → 抛 `token 无效`；非 2xx 抛带状态。
 - `test`：ping + 写读一个空 manifest 探测（用随机 deviceId `probe-<rand>`，随后不删也行；但不要污染列表：改用 `HEAD objects/<全0hash>` 探测权限 + ping）。
 
@@ -330,6 +343,7 @@ Peer 路由必须校验 `x-dsh-sync-token === config.peerToken`，否则 401。
 | `GET /v1/devices` | `{ devices: string[] }` |
 | `GET /v1/devices/<id>` | manifest JSON，404 |
 | `PUT /v1/devices/<id>` | 保存 manifest（< 2 MiB），`{ ok:true }` |
+| `GET /v1/objects` | `{ ok, total, truncated, hashes[] }`（对端建索引；≤ 50000 条，超出置 `truncated:true`） |
 | `HEAD /v1/objects/<hash>` | 200/404 |
 | `GET /v1/objects/<hash>` | 原始字节 |
 | `PUT /v1/objects/<hash>` | 原始字节，幂等 |
@@ -400,6 +414,16 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 - 每个交付必须附：改动文件清单 + 运行命令 + 真实输出摘要 + 已知限制。
 - 不确定的实现选择写进 `NOTES-<name>.md`，不要静默猜测。
 ## 13. 口径修订（CHANGELOG）
+
+- 2026-11-13（1.4.0 上传加速）：对象探测从“每对象 2 次 HEAD”降为 0~1 次：
+  `engine.putObject` 不再先探测（探测统一由后端负责），WebDAV 用一次 `PROPFIND objects/` 建索引，
+  Peer 用新增的 `GET /v1/objects` 建索引。实测 200 文件 / RTT 150ms 场景请求数 605 → 203，耗时 98.7s → 9.1s。
+- 2026-11-13（1.4.0 并发）：上传/下载/删除/冲突备份改为有界并发（`concurrency`，默认 4，范围 1–16），
+  另设 64 MiB 在飞字节预算；单条失败语义与串行版一致（记 `errors` 并继续）。
+- 2026-11-13（1.4.0 压缩）：新增 `compressObjects`（默认开）；文本对象 gzip 后存 `objects/<hash>.z`，
+  读回自动解压。实测 60 × 200KB JSON 场景传输量 13.18 MB → 0.93 MB（−92.9%）。
+- 2026-11-13（1.4.0 可观测）：`lastResult` 增加 `skippedUploads` / `wireBytesUp` / `bytesPerSecond`，
+  设置页展示“去重跳过”与吞吐量；同步日志追加吞吐与实传字节。
 
 - 2026-11-08：peer target 的 `url` 增加归一化容错。`resolveProtocolBase(url)`：
   - 已以 `/dsh-sync/v1` 结尾 → 原样；

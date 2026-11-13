@@ -293,19 +293,29 @@ test('E2E WebDAV：mock 上 A→B→A 关键链路与对象去重', async (t) =>
   assert.equal(rA2.pulled, 1)
   assert.equal(await fsp.readFile(path.join(pair.a.workspace, 'hello.txt'), 'utf8'), 'dav-b')
 
-  // 协议覆盖：init 的 MKCOL、写对象 PUT、读对象 GET、HEAD 探测、PROPFIND 列表
-  const methods = new Set(dav.requests.map((item) => item.method))
-  for (const method of ['MKCOL', 'PUT', 'GET', 'HEAD', 'PROPFIND']) {
-    assert.ok(methods.has(method), `WebDAV 请求应包含 ${method}，实际 ${[...methods].sort().join(',')}`)
-  }
-  // 两份设备 manifest
-  assert.ok(dav.files.has(`/dsh-sync/devices/${A.store.deviceId}.json`))
-  assert.ok(dav.files.has(`/dsh-sync/devices/${B.store.deviceId}.json`))
   // 对象按内容去重：两个版本各 PUT 一次，共 2 次
   const objectPuts = dav.requests.filter(
     (item) => item.method === 'PUT' && item.path.startsWith('/dsh-sync/objects/'),
   )
   assert.equal(objectPuts.length, 2, `对象 PUT 次数=${objectPuts.length}，路径=${objectPuts.map((p) => p.path).join(',')}`)
+
+  // 协议覆盖：init 的 MKCOL、写对象 PUT、读对象 GET、PROPFIND 列表。
+  // HEAD 只作为“服务端不支持对象清单 / PROPFIND 失败”时的回退路径，不再是必经路径。
+  const methods = new Set(dav.requests.map((item) => item.method))
+  for (const method of ['MKCOL', 'PUT', 'GET', 'PROPFIND']) {
+    assert.ok(methods.has(method), `WebDAV 请求应包含 ${method}，实际 ${[...methods].sort().join(',')}`)
+  }
+  // 回归守卫：旧实现每个对象 2 次 HEAD（本用例即 4 次）。对象清单可用时应为 0，
+  // 回退路径最多每对象 1 次，因此用“不超过对象 PUT 次数”卡住双重探测回归。
+  const headCalls = dav.requests.filter((item) => item.method === 'HEAD')
+  assert.ok(
+    headCalls.length <= objectPuts.length,
+    `HEAD 次数=${headCalls.length}，超过对象数（疑似恢复成逐对象双重探测）`,
+  )
+
+  // 两份设备 manifest
+  assert.ok(dav.files.has(`/dsh-sync/devices/${A.store.deviceId}.json`))
+  assert.ok(dav.files.has(`/dsh-sync/devices/${B.store.deviceId}.json`))
 
   // 幂等
   assertIdle(await syncReport(A.engine), 'WebDAV A 空转')

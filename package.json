@@ -1,6 +1,6 @@
 {
   "name": "dsh-sync",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "多设备文件型同步：把 DSH 配置、会话与工作区内容通过本地目录 / WebDAV / 对等 DSH / .dshsync 归档无缝同步。",
   "type": "module",
   "main": "./lib/index.js",

@@ -370,3 +370,68 @@ UI：`Targets` 类型下拉与列表均 WebDAV 优先；每个 WebDAV/peer targe
 | 线上非法 | `POST /api/connect`（`ftp://`）→ 400 `webdav 的 url 必须是 http(s) 地址` |
 | 线上合法 | `POST /api/connect`（https + 账号 + 密码，sync:false）→ 200，新增 `dav-2`、test=false（示例域名不可达），清理后 targets 恢复 `local/dav/peer` |
 | 测试 | `node --test test/*.test.mjs` → 68/68；新增 connect 断言（成功 + 非法 400） |
+
+---
+
+## 15. 上传加速验证（2026-11-13，1.4.0）
+
+### 15.1 基准（可复现，见 `bench/BASELINE.md`）
+
+`node bench/upload-bench.mjs`（真实 SyncEngine + mock WebDAV，延迟注入 RTT）：
+
+| 场景 | 1.3.0（`044a940`） | 1.4.0 | 提升 | 请求数 | HEAD/对象 |
+|---|---|---|---|---|---|
+| 200 × 4KB，RTT 150ms | 98,664 ms | 9,098 ms | 10.8× | 605 → 203 | 2 → 0 |
+| 20 小 + 3 × 10MB，RTT 50ms | 4,858 ms | 1,921 ms | 2.5× | 74 → 26 | 2 → 0 |
+| 260 对象（60 × 200KB 文本），RTT 100ms | 87,339 ms | 8,221 ms | 10.6× | 785 → 263 | 2 → 0 |
+| 上例实际传输字节 | 13,176,412 B | 931,688 B | −92.9% | — | — |
+
+改造前 `HEAD=400`（200 对象 × 2 次探测）是主要浪费来源；改造后为 0。
+
+### 15.2 实现要点（与 SPEC §5.2/§5.3 一致）
+
+| 项 | 实现 |
+|---|---|
+| 探测去重 | `engine.putObject` 只调一次 `writeObject`，探测统一交给后端 |
+| WebDAV 索引 | `init` 一次 `PROPFIND objects/` `Depth:1` → `Map<hash,'raw'|'gz'>`；PROPFIND 404/405/501 时回退单次 HEAD |
+| Peer 索引 | `GET /dsh-sync/v1/objects` → `{hashes}`；端点缺失或 `truncated:true` 时回退单次 HEAD |
+| 并发 | `lib/engine/concurrency.js` 有界并发：默认 4、范围 1–16、64 MiB 在飞字节预算；单条失败仍记 `errors` 并继续 |
+| 压缩 | `objects/<hash>.z`（gzip，仅当 <90% 且 ≥512B）；读回自动解压并校验 sha256；≥4MiB 走异步 zlib 不阻塞事件循环 |
+| 兼容 | 1.3.0 的 `objects/<hash>` 原始对象仍可读写；新 `.z` 需所有设备升级 |
+| 可观测 | `lastResult` 增 `skippedUploads` / `wireBytesUp` / `bytesPerSecond`；日志与本机 UI 同步展示 |
+
+### 15.3 线上（真实 123pan WebDAV）
+
+| 检查 | 结果 |
+|---|---|
+| 插件重载 | `plugin_manager set_plugin` 关闭再启用 → `applied`，无 warning |
+| `/api/status` 新字段 | `concurrency = 4`、`compressObjects = true`（修复前为 `None`，UI 只能吃默认值） |
+| 真实同步 | `POST /api/sync` → `ok:true`；`dav` 上传 1 个对象 3.49MB / 14.5s（241 KB/s，123pan 侧带宽），`local` 19.9 MB/s |
+| 压缩行为 | 该对象是 `session.v4.jsonl.zstd`（已压缩），`wireBytesUp == bytesUp` → gzip 正确地不重复压 |
+| 空转稳定 | 连续两次同步：第 2 次 `pushed=0 pulled=0 tombstoned=0 conflicts=0` |
+
+### 15.4 线上事故与护栏（同一轮发现并修复）
+
+现象：`dav` 与 `dav-2` 指向同一 WebDAV 根（同 deviceId），两份独立基线互相把对方写的 manifest 当远端变更 →
+11:31–11:37 期间在 `~/.dsh/sessions/.../` 生成 13 个 `*.conflict-601a954c-*` 快照（29.1 MiB）。实测日志：
+`[dav] … 冲突1`，且每次同步都新增一个更大的快照（典型振荡）。
+
+处置：
+
+1. **代码护栏**：`normalizeConfig` 增加远程存储指纹去重（webdav = url+basePath+username；peer = url；local = path）。
+   重复项自动 `enabled=false` 并给出可读 warning；同账号不同 `basePath` 不误杀（合法双 store）。7 条单测覆盖。
+2. **线上验证**：重载后 `dav-2` 自动停用，`dav` 保持启用，`warnings` 出现
+   `同步目标「WebDAV」与「WebDAV」指向同一个远程存储，已自动停用…`。
+3. **本地清理**：13 个冲突快照移入 `/root/.dsh/dsh-sync/quarantine/conflicts-20261113T113837/`（可逆，不在任何同步根内），sessions 下 0 残留。
+4. **远端清理**：按“不在 `dav` 基线引用集合内”逐条校验后 `DELETE objects/<hash>`，12 个孤儿对象全部 204，0 跳过。
+5. **稳定性复验**：清理后连续两次同步零冲突、零重复上传。
+
+### 15.5 测试
+
+| 检查 | 结果 |
+|---|---|
+| 全量 | `node --test test/*.test.mjs` → **92/92** |
+| 新增专项 | `test/concurrency.test.mjs`（6）、`test/backends-speed.test.mjs`（11）、`test/config-targets.test.mjs`（7） |
+| 回归守卫 | `test/e2e.test.mjs` 断言 `HEAD 次数 ≤ 对象 PUT 次数`（旧实现每对象 2 次 HEAD 会直接失败） |
+| 打包 | `npm pack` → `dist/dsh-sync-1.4.0.tgz`；`bench/` 不进包（27 个文件） |
+| 安装验证 | 临时目录 `npm install dist/dsh-sync-1.4.0.tgz` → `import('dsh-sync')` 正常，`version=1.4.0` |

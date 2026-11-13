@@ -18,6 +18,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 
 import { createBackend } from '../lib/backends/index.js'
+import { __resetWebdavInitCache } from '../lib/backends/webdav.js'
 import { resolveProtocolBase } from '../lib/backends/peer.js'
 import { sha256Hex } from '../lib/util.js'
 import { startMockWebdav } from './support/mock-webdav.mjs'
@@ -273,13 +274,22 @@ test('webdav · init 逐级 MKCOL、405 视为已存在、Basic Auth 正确', as
   ])
   for (const dir of mkcolPaths) assert.ok(dav.dirs.has(dir), `${dir} 应已创建`)
 
-  // 重复 init：服务器对已存在目录返回 405，后端必须视为成功
+  // 重复 init：命中 5 分钟 init 缓存 → 不再重复 MKCOL（每次同步省 4 次往返）
   await backend.init()
-  const secondPaths = dav.requests
-    .filter((request) => request.method === 'MKCOL')
-    .slice(mkcolPaths.length)
-    .map((request) => request.path)
-  assert.deepEqual(secondPaths, mkcolPaths)
+  assert.equal(
+    dav.requests.filter((request) => request.method === 'MKCOL').length,
+    mkcolPaths.length,
+    'init 缓存命中时不应重复 MKCOL',
+  )
+
+  // 清掉缓存后再 init：目录都已存在，服务器返回 405，后端必须视为成功
+  __resetWebdavInitCache()
+  await backend.init()
+  const repeat = dav.requests.filter((request) => request.method === 'MKCOL').slice(mkcolPaths.length)
+  assert.deepEqual(repeat.map((request) => request.path), mkcolPaths)
+  for (const request of repeat) {
+    assert.equal(request.status, 405, `${request.path} 已存在，应为 405 且被兼容`)
+  }
 })
 
 test('webdav · test() 走 MKCOL + 探测文件 PUT/GET/DELETE 并清理', async (t) => {
@@ -381,9 +391,11 @@ test('webdav · PROPFIND Depth:1 列设备，过滤非 .json 文件', async (t) 
 
   assert.deepEqual(await backend.listDevices(), ['dev-a', 'dev-b'])
 
-  const propfind = dav.requests.find((request) => request.method === 'PROPFIND')
-  assert.ok(propfind, '应发出 PROPFIND')
-  assert.equal(propfind.path, `${DAV_MOUNT}${DAV_SUB}/devices/`)
+  // init 之后还会对 objects/ 发一次 PROPFIND（建对象索引），这里只取列设备那一次
+  const propfind = dav.requests.find(
+    (request) => request.method === 'PROPFIND' && request.path === `${DAV_MOUNT}${DAV_SUB}/devices/`,
+  )
+  assert.ok(propfind, '应对 devices/ 发出 PROPFIND')
   assert.equal(propfind.status, 207)
 })
 
