@@ -75,6 +75,10 @@ key = `${rootId}/${relativePosixPath}`
   "deviceId": "b3f...",
   "deviceName": "phone",
   "generatedAt": 1760000000000,
+  "roots": [
+    { "id": "sessions", "path": "/root/.dsh/sessions" },
+    { "id": "ws-e1999dddc309", "path": "/root/多设备同步" }
+  ],
   "entries": [
     { "key": "profile/cordis.patch.yml", "root": "profile", "path": "cordis.patch.yml",
       "hash": "sha256hex", "size": 1234, "mtimeMs": 1760000000000,
@@ -414,6 +418,39 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 - 每个交付必须附：改动文件清单 + 运行命令 + 真实输出摘要 + 已知限制。
 - 不确定的实现选择写进 `NOTES-<name>.md`，不要静默猜测。
 ## 13. 口径修订（CHANGELOG）
+
+- 2026-11-14（1.7.0，默认 WebDAV + 双向实时速率）：
+  - `defaultTargets` 改为 **WebDAV 排第一**，`local`/`peer` 默认关闭。WebDAV 默认 `enabled:false`：
+    `normalizeTarget` 已拒绝「启用但没有地址」的目标（`lib/config.js:193`），预置启用会得到非法配置。
+  - `connectTarget` 在找不到同 id / 同 url 目标时，复用「同 type 且地址为空」的预置占位，
+    避免首次连接多出一个 `dav-2` 而把占位晾着。
+  - 新增 `targetUsable()`，`enabledTargets()` 只返回**启用且已填必需字段**的目标：
+    默认配置在未填地址时不会被自动同步反复报错；`sync()` 在无可用目标时给出点名 WebDAV 的提示。
+  - 字节统计补齐下行：后端新增 `onBytes(direction, n)` 回调（webdav/peer 在 `readObject`/`writeObject`
+    后调用），`stats` 新增 `wireBytesDown`、`upBytesPerSecond`、`downBytesPerSecond`。
+    下载按**实际传输字节**计（WebDAV 的 `.z` 压缩形态），与原始 `bytesDown` 分别统计。
+  - `status()` 新增 `progress`（同步中为实时快照：`elapsedMs`、`wireBytesUp/Down`、
+    `upBytesPerSecond`、`downBytesPerSecond`；空闲为 `null`）。设置页在 busy 期间每 800ms 轮询一次。
+  - 状态卡：同步中显示 `↑ x/s · ↓ y/s`；结束后显示 `↑ 上行字节 · ↓ 下行字节 · 平均速率`。
+    此前只有上行一个方向的数字，下载完全不体现。
+
+- 2026-11-14（1.7.0，完整备份与跨设备恢复）：
+  - `manifest` 顶层新增 `roots: [{id, path}]`。根 id 由 label 派生（`RootForm` 的
+    `freshId`），两台设备上同一个工作区可能得到不同 id；只按 id 匹配会让恢复**静默跳过**
+    全部文件。路径是跨设备稳定的锚点。旧归档无该字段时 `rootPaths` 为空 Map，行为与旧版一致。
+  - `POST /dsh-sync/api/export` 支持 `{"scope":"full"}`：根 = 已启用根 + `workspace.json`
+    登记的工作区，把「工作区文件」和「对话文件」打进同一个归档。空 body 仍是 `roots` 行为。
+    工作区过滤规则在 `lib/engine/workspaces.js`：拒绝系统级祖先（`/`、`/root`、`/usr`…）、
+    已被既有根覆盖的、被更具体工作区包含的。
+  - 新增 `maxArchiveBytes`（默认 256 MiB，下限 16 MiB），与导入上限
+    `IMPORT_LIMIT`（256 MiB）对齐：归档是整块在内存里 build 的，没有预算就会 OOM；
+    且超上限的包自己导入不回去。已启用根先占额度，余量按体积升序装工作区，放不下的跳过
+    并在 UI 通知里点名。
+  - 导入新增按路径兜底与**补建根**（`adoptImportRoot`）：路径必须位于可信父目录
+    （`$DSH_HOME` 及其上一级）内，否则拒绝并记 warn。补建的根写盘（`store.saveConfig`），
+    报告新增 `adoptedRoots`。重装后配置为空时，这是「数据拯救」唯一能真正还原的路径。
+  - 设置页新增「完整备份（工作区＋对话）」按钮与体积跳过提示；`pending` 增加
+    `export-full` 状态。导出的浏览器下载沿用既有 `/api/download/<name>` + Blob 流程。
 
 - 2026-11-13（1.6.0，快速开始易用性）：
   - `WebdavQuickCard` 从设置页**第一张卡**移到 `SyncSection` **末尾**（活动日志卡之后）。
