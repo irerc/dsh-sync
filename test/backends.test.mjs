@@ -696,3 +696,71 @@ test('createBackend · 三种类型都返回完整 SyncBackend 接口', async (t
     }
   }
 })
+test('webdav · 已压缩扩展名跳过 gzip，普通文本仍压缩（省 CPU 不省正确性）', async (t) => {
+  const dav = await startWebdav(t, { basePath: DAV_MOUNT, username: DAV_USER, password: DAV_PASS })
+  const backend = await createBackend({
+    id: 'dav-precompressed',
+    type: 'webdav',
+    url: `${dav.url}${DAV_MOUNT}`,
+    username: DAV_USER,
+    password: DAV_PASS,
+    basePath: DAV_SUB,
+    compressObjects: true,
+  })
+  await backend.init()
+
+  // 高度可压缩的内容：如果走了 gzip 必然变成 .z 形态，所以能反证是否跳过。
+  const compressible = Buffer.from('a'.repeat(200 * 1024))
+
+  const textHash = sha256Hex(compressible)
+  await backend.writeObject(textHash, compressible, { name: 'notes/plain.txt' })
+  const textStats = (await backend.listObjectStats()).find((item) => item.hash === textHash)
+  assert.ok(textStats, '普通文本对象应存在')
+  assert.equal(textStats.form, 'gz', '普通文本应压缩存储')
+
+  const precompressed = Buffer.from('b'.repeat(200 * 1024))
+  const zstdHash = sha256Hex(precompressed)
+  await backend.writeObject(zstdHash, precompressed, { name: 'sessions/x/session.v4.jsonl.zstd' })
+  const zstdStats = (await backend.listObjectStats()).find((item) => item.hash === zstdHash)
+  assert.ok(zstdStats, '已压缩对象应存在')
+  assert.equal(zstdStats.form, 'raw', '已压缩扩展名不应再 gzip')
+
+  // 两种形态都要能按 hash 读回原文，跳过压缩不能影响往返。
+  assert.deepEqual(Buffer.from(await backend.readObject(textHash)), compressible)
+  assert.deepEqual(Buffer.from(await backend.readObject(zstdHash)), precompressed)
+})
+
+test('webdav · 清单 PUT 偶发 408 会自动重试，不把整轮同步判失败', async (t) => {
+  const dav = await startWebdav(t, {
+    basePath: DAV_MOUNT,
+    username: DAV_USER,
+    password: DAV_PASS,
+    failPutPattern: /\/devices\/[0-9a-f]+\.json$/,
+    failPutTimes: 2,
+    failPutStatus: 408,
+  })
+  const backend = await createBackend({
+    id: 'dav-retry',
+    type: 'webdav',
+    url: `${dav.url}${DAV_MOUNT}`,
+    username: DAV_USER,
+    password: DAV_PASS,
+    basePath: DAV_SUB,
+  })
+  await backend.init()
+
+  const manifest = { version: 1, deviceId: 'a'.repeat(32), entries: [] }
+  const written = await backend.writeManifest('a'.repeat(32), manifest)
+  assert.equal(written.ok, true, '两次 408 后第三次应成功')
+  assert.equal(written.attempts, 3, `应重试到第 3 次，实际 ${written.attempts}`)
+
+  // 重试成功后清单内容必须正确（不是把失败响应当成功写空）。
+  const readBack = await backend.readManifest('a'.repeat(32))
+  assert.equal(readBack.deviceId, 'a'.repeat(32))
+
+  const puts = dav.requests.filter(
+    (request) => request.method === 'PUT' && /\/devices\//.test(request.path),
+  )
+  assert.equal(puts.length, 3, `清单 PUT 应共 3 次，实际 ${puts.length}`)
+  assert.deepEqual(puts.map((request) => request.status), [408, 408, 201])
+})

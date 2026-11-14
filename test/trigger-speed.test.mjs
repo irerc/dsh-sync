@@ -200,3 +200,35 @@ test('D6 已存在集合返回 423 Locked 时不能报错（123pan 实测行为�
     await pair.cleanup?.()
   }
 })
+
+test('D7 新配置项可在运行时修改，并立即反映到 status', async () => {
+  const pair = await createSandboxPair()
+  try {
+    const { engine } = await makeDevice(pair.a, {
+      name: 'A',
+      rootPath: pair.a.workspace,
+      targets: [{ id: 'local', type: 'local', enabled: true, path: path.join(pair.a.dshHome, 'remote') }],
+    })
+    // 默认值来自 lib/config.js。
+    let status = await engine.status()
+    assert.equal(status.syncOnAgentIdle, true, '默认应开启 Agent 停止上传')
+    assert.equal(status.agentIdleDelaySeconds, 20)
+    assert.equal(status.autoSave, false, 'autoSave 默认应关闭（上传交给 idle）')
+    assert.equal(status.autoSyncIntervalSeconds, 1800)
+
+    const updated = await engine.updateConfig({ syncOnAgentIdle: false, agentIdleDelaySeconds: 45 })
+    assert.equal(updated.config.syncOnAgentIdle, false)
+    assert.equal(updated.config.agentIdleDelaySeconds, 45)
+    status = await engine.status()
+    assert.equal(status.syncOnAgentIdle, false)
+    assert.equal(status.agentIdleDelaySeconds, 45)
+
+    // 关闭后即使 startAutomation 也不排 idle 同步。
+    engine.startAutomation()
+    engine.noteAgentIdle()
+    assert.equal(engine.idleTimer, null)
+    engine.stopAutomation()
+  } finally {
+    await pair.cleanup?.()
+  }
+})

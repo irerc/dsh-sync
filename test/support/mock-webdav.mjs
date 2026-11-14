@@ -145,10 +145,17 @@ export async function startMockWebdav(options = {}) {
     autoCreateParents = true,
     // 已存在集合时 MKCOL 的状态码：RFC 是 405，123pan 实测 423 Locked。
     mkcolExistingStatus = 405,
+    // 故障注入：对匹配 pathname 正则的请求，前 failTimes 次返回 failStatus。
+    // 用来验证"清单 PUT 408 后重试"这类真实故障（123pan 实测会返回 408）。
+    failPutPattern = null,
+    failPutTimes = 0,
+    failPutStatus = 408,
     host = '127.0.0.1',
     port = 0,
   } = options
 
+  // 解构出来的是 const，故障计数需要可变状态；用一个对象承载。
+  const failState = { times: failPutTimes }
   const base = normalizeBase(basePath)
   const authRequired = !(username === '' && password === '')
   const expectedAuth = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`
@@ -286,6 +293,11 @@ export async function startMockWebdav(options = {}) {
     }
 
     if (method === 'PUT') {
+      if (failPutPattern && failState.times > 0 && failPutPattern.test(key)) {
+        failState.times -= 1
+        send(req, res, failPutStatus, 'injected failure', { 'content-type': 'text/plain; charset=utf-8' })
+        return
+      }
       if (key === '' || dirs.has(key)) {
         send(req, res, 405, 'cannot PUT a collection', { 'content-type': 'text/plain; charset=utf-8' })
         return

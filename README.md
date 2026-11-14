@@ -341,6 +341,14 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 
 所以默认配置下，**自动上传发生在 Agent 停止之后**，而不是按固定间隔在 turn 进行中抢带宽。
 
+**实现上的一个坑（已修，勿回退）**：监听必须写成 `ctx.on('agent/status', fn, { global: true })`。
+宿主派发 agent 事件时用 `carrier[Context.filter]` 过滤监听器，只放行位于该 agent 作用域内的 ctx；
+插件挂在根 ctx 上，**不带 `global` 的注册会被静默丢掉**——不报错、不告警，监听器一次都不被调用。
+表现为「功能看起来都在，就是永远不触发」。`test/host-events.test.mjs` 盯着这个选项。
+
+日志里每条同步都带触发源（`Agent 停止` / `兜底定时` / `启动` / `手动` / `自动保存`），
+所以「到底有没有在 Agent 停止时上传」可以直接查，不用猜。
+
 行为约定：
 
 - 自动保存**只推不拉**：远端变更要等自动同步（或手动同步）才会落地。
@@ -348,6 +356,26 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 - 自动任务失败**只记日志**，不会抛到进程；可在设置页日志里看到原因。
 - 卸载插件时会清理所有 timer/listener，不会留下后台任务。
 - 两个间隔与开关都可在设置页修改，保存即生效（无需重启）。
+
+### 7.2 默认同步哪些内容
+
+| 根 | 路径 | 默认 | 说明 |
+|---|---|---|---|
+| `profile` | `$DSH_HOME/profiles/<profile>` | 开 | 插件与配置；排除 `node_modules`、市场缓存、`package.json` |
+| `sessions` | `$DSH_HOME/sessions` | 开 | 对话记录本体（消息、工具调用、标题） |
+| `attachments` | `$DSH_HOME/attachments` | 开 | 对话里的图片/文件（实测 24 MiB / 115 个对象） |
+| `storages` | `$DSH_HOME/storages` | 开 | `workspace.json`（会话↔工作区关联）、`schedule.json`；排除 `session_projcache`、整份工作区代码 |
+| `documents` | `~/Documents` | 关 | 工作区文档，默认关掉避免首次同步拖入大仓库 |
+
+`sessions` 根强制排除三类"不是对话记录"的东西：
+
+- `**/session.lock`：0 字节 flock 租约，带过去只会在新设备凭空多出一个锁；
+- `.sessions-trash/**`：已删会话的回收站，带过去等于复活用户删掉的会话；
+- `**/*.conflict-*`：同步冲突留下的副本。DSH 只认规范文件名，不会读它——留在会话目录里
+  既是永久不可见的死文件，又会被推到每台设备（实测单份 5.18 MB）。
+
+`attachments` 与 `storages` 是 1.9.0 新增的根。**已有配置会被自动补上**（不含 `profile`/`documents`：
+那两个可能是你主动关掉的），补上时会记一条 warn 日志，说明加了哪个根、路径是什么。
 
 ---
 
@@ -457,21 +485,37 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 去重跳过的对象没有走网络，不计入分母——否则会得出一个漂亮但不存在的高速。
 逻辑量（`bytesUp`）单独保留，并用 `dedupeSavedBytes = bytesUp - wireBytesUp` 解释差从哪来。
 上传对象默认 gzip 压缩，`wireBytesUp` 是压缩后的字节，也就是真实流量。
+已经压缩过的扩展名（`.zstd`/`.gz`/`.zip`/图片/音视频）**不再试 gzip**：实测会话日志
+`session.v4.jsonl.zstd` 压完仍是 97.8%，达不到 90% 门槛，压缩结果被丢掉，只白烧一次
+线程池往返和一份临时缓冲（宿主跑在手机上，这笔开销是实的）。
+
+**去重能省什么、不能省什么（实测边界）**：内容寻址只对「同内容」有效。会话日志每轮都在增长，
+同路径 hash 每轮都变（`0f57f94f` → `0eb41c02` → `3c06e21b`），所以每轮仍要完整重传约 7.4 MB。
+27.5 小时日志里 239 次同步、275 个推送，真正由去重省掉的只有 8 次 / 约 10.2 MB。
+要根治得改成分块增量（每轮只传新增的尾部），那会动清单与 `.dshsync` 格式，属于 2.0 的事。
 
 **云端回收**：文件每改一次就多一个对象，旧对象不再被任何 manifest 引用，但没人删。
 本机实测（123pan，`/dsh-sync`）：
 
 | 项 | 数值 |
 |---|---|
-| 对象总数 | 493 个 / ≈1.58 GB |
+| 回收前 | 493 个对象 / 1592.8 MB |
 | 仍被设备 manifest 引用 | 82 个 / ≈69 MB |
 | 可回收（无引用） | 412 个 / **1,655,533,352 字节（1.54 GiB）** |
-| 预演耗时 | 9060 ms |
+| 实际回收 | 两轮共 **1,572,956,000 字节（1.47 GiB）**、删除 257 个对象 |
+| 回收后云端总占用 | **83 个对象 / 92,211,042 字节（87.9 MiB）** |
+| 纳入附件与 storages 后 | **202 个对象 / 106,130,702 字节（101.2 MiB）**，另回收 13 个孤儿（50.4 MiB） |
+| 补传缺失对象 | 1 个 / 11,269,686 字节（自愈） |
+| 预演耗时 | 9060 ms → 3778 ms（对象变少后） |
 
 `POST /dsh-sync/api/prune`：
 
 - 默认**只预演**（`{}`），返回 `objects` / `referenced` / `removable` / `removableBytes` / `missingReferenced`，不删任何东西。
-- `{"apply":true}` 才真删，返回 `removed` / `freedBytes` / `bytesPerSecond`。
+- `{"apply":true}` 才真删，返回 `removed` / `freedBytes` / `freedBytesPerSecond` / `repaired` / `repairedBytes`。
+  `freedBytesPerSecond` 是**回收字节/秒**（删除不产生网络流量），故意不叫 `bytesPerSecond`，免得又被当成"同步速度"。
+- **自愈**：`missingReferenced` 是「manifest 说对象在，远端实际没有」。这种洞很隐蔽——hash 相同
+  会让合并判定"无需动作"，于是永远没人补传，别人拉取就 404。回收时若本机源文件 hash 仍匹配，
+  会顺手补传，报告 `repaired` / `unrepairedReferenced`。实测补回 1 个 11.2 MB 的会话日志。
 - 保守规则：引用集合来自**所有**设备 manifest；一个都读不到就整轮放弃；引用集合为空也拒绝执行。
 - 设置页「云端回收」按钮两步走：先预演，再显示「确认删除 N 个对象（X）」。
 - 回收**不影响**任何设备的数据：被引用的对象一律保留，下次同步也不会因此 404。

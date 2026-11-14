@@ -460,6 +460,27 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
     视为"集合已存在"。123pan 对已存在集合返回 **423**，插件重载后 init 缓存清空即失败
     （`MKCOL ... 423 Locked`）。
   - 设置页新增「云端回收」两步按钮（先预演、再确认删除）与「去重省下 X」chip。
+  - **自愈**：`pruneRemote` 发现「manifest 引用但对象缺失」时，若本机源文件 hash 仍匹配则补传
+    （`repaired`/`repairedBytes`/`unrepairedReferenced`）。实测补回 1 个 11.2 MB 会话日志。
+    这个洞原来无人能补：hash 相同 → 合并判定 keep → 永远不再上传，别的设备拉取就 404。
+  - `freedBytesPerSecond`：回收给的是"删除字节/秒"，与 `bytesPerSecond` 分开命名，不让它冒充网速。
+
+- 2026-11-14（1.9.0 追补，默认根与可靠性）：
+  - 新增两个默认根：`attachments`（`$DSH_HOME/attachments`，实测 24 MiB/115 对象）与
+    `storages`（只放行 `workspace.json`、`schedule.json`，排除 `session_projcache` 与整份工作区代码）。
+    缺了它们，另一台设备上的对话图片/文件全裂、会话↔工作区关联丢失。
+  - **迁移**：`normalizeConfig` 给已有配置补上这两个新 id 的根（不动 `profile`/`documents`——
+    那两个可能是用户主动关掉的），补上时记一条 warn。
+  - `sessions` 根与 app 备份同时排除 `**/session.lock`、`.sessions-trash/**`、`**/*.conflict-*`：
+    锁文件带过去只会在新设备凭空多出锁；回收站带过去等于复活已删会话；
+    冲突副本 DSH 根本不读（只认规范文件名），实测单份 5.18 MB 的死文件还会被推到每台设备。
+  - **事件注册必须带 `{ global: true }`**（`lib/index.js`）。宿主用 `carrier[Context.filter]`
+    过滤 agent 事件监听器，根 ctx 上的普通注册会被静默丢弃：不报错、监听器零调用。
+    实测症状是「启动同步照跑、Agent 停止后从不同步」。加 `global` 后实测
+    `lastResult.trigger === 'agent-idle'`、`ok:true`。回归测试 `test/host-events.test.mjs`。
+  - 同步日志加上触发源标签（`triggerLabel`），否则无法区分按间隔跑的和 Agent 停止后跑的。
+  - WebDAV 清单写入加**有限重试**（408/425/429/5xx + 超时/网络错误，3 次、退避可被取消打断）：
+    实测出现过 `HTTP 408` 让整轮同步 `ok:false`——文件都传完了、清单没更新，等于白跑。
 
 - 2026-11-14（1.8.0，完整应用数据 + 流式归档）：
   - 新增 `scope=app`（`POST /dsh-sync/api/export` body `{"scope":"app"}`）：根 = `dsh-home`

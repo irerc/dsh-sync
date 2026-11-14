@@ -148,3 +148,30 @@ test('首次连接 WebDAV：填满预置占位目标，不新建 dav-2', async (
   await fsp.rm(tmp, { recursive: true, force: true })
 })
 
+
+test('已有配置会被补上新增的 attachments / storages 根，且不重复补', () => {
+  const env = { HOME: '/root', DSH_HOME: '/root/.dsh', DSH_PROFILE: 'web' }
+  const legacy = {
+    roots: [
+      { id: 'sessions', label: '会话记录', path: '/root/.dsh/sessions', enabled: true },
+      { id: 'documents', label: '工作区文档', path: '/root/Documents', enabled: false },
+    ],
+  }
+  const first = normalizeConfig(legacy, env).config
+  const ids = first.roots.map((root) => root.id)
+  assert.ok(ids.includes('attachments'), '应补上附件根')
+  assert.ok(ids.includes('storages'), '应补上 storages 根')
+  // 用户主动关掉的根不能被"迁移"重新打开。
+  assert.equal(first.roots.find((root) => root.id === 'documents').enabled, false)
+
+  // 再规范化一次：已经存在的根不能再补一遍。
+  const second = normalizeConfig(first, env).config
+  assert.equal(second.roots.filter((root) => root.id === 'attachments').length, 1)
+  assert.equal(second.roots.filter((root) => root.id === 'storages').length, 1)
+
+  // 若用户已把整个 DSH_HOME 作为根，新增根被覆盖，不应重复添加。
+  const covered = normalizeConfig({
+    roots: [{ id: 'dsh-home', label: '全部配置', path: '/root/.dsh', enabled: true }],
+  }, env).config
+  assert.ok(!covered.roots.some((root) => root.id === 'attachments'), '已被覆盖时不应再加')
+})
