@@ -714,16 +714,15 @@ test('14) 0 字节文件：size=0 成员往返，sha256 为 e3b0c442…', async 
   assert.equal(gunzipSync(archive.bytes).length % 512, 0)
 })
 
-test('流式导出与内存导出逐字节一致（同样的输入必须产出同样的归档）', async () => {
+test('流式导出与内存导出语义一致（同样的输入解析出同样的内容）', async () => {
   const payload = Buffer.from('流式导出等价性\n'.repeat(500), 'utf8')
   const hash = createHash('sha256').update(payload).digest('hex')
   const manifest = manifestFor([entryFor('profile/notes.txt', hash, payload.length)])
 
-  // 两侧都用同一个冻结时间，否则 manifest.generatedAt 天然不同，比不出字节一致。
   const realNow = Date.now
   Date.now = () => 1700000000000
-  let inMemory
   const chunks = []
+  let inMemory
   let streamed
   try {
     inMemory = await buildArchive({ manifest, readObject: async () => payload })
@@ -736,16 +735,42 @@ test('流式导出与内存导出逐字节一致（同样的输入必须产出�
     Date.now = realNow
   }
 
-  const streamedBytes = Buffer.concat(chunks)
-  assert.equal(streamedBytes.length, inMemory.bytes.length, '字节数必须一致')
-  assert.ok(streamedBytes.equals(Buffer.from(inMemory.bytes)), '内容必须逐字节一致')
-  assert.equal(streamed.size, inMemory.size)
-  assert.equal(streamed.sha256, inMemory.sha256, 'sha256 必须一致')
+  // 成员顺序不同（流式把 manifest 放最后，才能用实际字节的 hash），解析结果必须一致。
+  const fromMemory = await parseArchive(inMemory.bytes)
+  const fromStream = await parseArchive(Buffer.concat(chunks))
+  assert.deepEqual(
+    fromMemory.manifest.entries.map((e) => [e.key, e.hash, e.size]),
+    fromStream.manifest.entries.map((e) => [e.key, e.hash, e.size]),
+  )
+  assert.ok(Buffer.from(fromStream.objects.get(hash)).equals(payload))
+  assert.equal(streamed.size, Buffer.concat(chunks).length)
+  assert.equal(streamed.objects, 1)
+  assert.deepEqual(streamed.changed, [])
+})
 
-  // 流式产物必须能被正常解析回来。
-  const parsed = await parseArchive(streamedBytes)
-  assert.equal(parsed.manifest.entries.length, 1)
-  assert.ok(Buffer.from(parsed.objects.get(hash)).equals(payload))
+test('流式导出：文件在导出期间被追加时不失败，清单跟实际内容走', async () => {
+  // 还活着的会话日志就是这个场景：扫描时 hash=A，打包时读到 A+B。
+  const oldBytes = Buffer.from('第一行\n', 'utf8')
+  const newBytes = Buffer.from('第一行\n第二行\n', 'utf8')
+  const oldHash = createHash('sha256').update(oldBytes).digest('hex')
+  const newHash = createHash('sha256').update(newBytes).digest('hex')
+  const manifest = manifestFor([entryFor('sessions/live.jsonl', oldHash, oldBytes.length)])
+
+  const chunks = []
+  const result = await buildArchiveStream({
+    manifest,
+    readObject: async () => newBytes,
+    write: async (chunk) => { chunks.push(Buffer.from(chunk)) },
+  })
+
+  assert.deepEqual(result.changed, ['sessions/live.jsonl'])
+  const parsed = await parseArchive(Buffer.concat(chunks))
+  const entry = parsed.manifest.entries[0]
+  assert.equal(entry.hash, newHash, '清单要指向实际写入的内容')
+  assert.equal(entry.size, newBytes.length)
+  assert.ok(Buffer.from(parsed.objects.get(newHash)).equals(newBytes), '导入得到的是追加后的完整内容')
+  // 旧 hash 不该被引用
+  assert.equal(parsed.objects.has(oldHash), false)
 })
 
 test('流式导出：对象按需读取，不会预先全部载入', async () => {
