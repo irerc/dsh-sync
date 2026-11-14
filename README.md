@@ -13,6 +13,9 @@ DSH（DeepSeek Harness）的多设备同步插件：把**用户选定的本地�
 | 传输方式 | 文件系统路径 | HTTP PUT/GET/HEAD/MKCOL/PROPFIND | 本插件自己的 `/dsh-sync/v1` HTTP 协议 | 浏览器下载/上传、Agent 工具、本地路径 |
 | 认证 | 由操作系统/挂载点决定 | HTTP Basic Auth | `x-dsh-sync-token` | 无（文件本身） |
 | 增量同步 | ✅（内容 hash） | ✅ | ✅ | ✅（导入按 manifest 合并） |
+| Agent 停止即上传 | ✅ | ✅ | ✅ | — |
+| 去重省流（同内容不重传） | ✅ | ✅ | ✅ | ✅ |
+| 云端回收旧对象 | ✅ | ✅（实测 1.54 GiB） | — | — |
 | 删除传播 | ✅（tombstone） | ✅ | ✅ | ✅ |
 | 冲突保护 | ✅（冲突副本） | ✅ | ✅ | ✅ |
 | 是否需要第三方服务 | 否（rclone/Termux SAF 等挂载即可） | 需要 WebDAV 服务 | 否（点对点） | 否 |
@@ -318,12 +321,25 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 
 | 配置项 | 默认值 | 语义 |
 |---|---|---|
-| `autoSave` | `true` | 每 `autoSaveIntervalSeconds` 扫描本地；有变更则对每个**启用** target 执行 **push（只上传，不拉取）**。 |
-| `autoSync` | `true` | 每 `autoSyncIntervalSeconds` 对每个启用 target 执行**完整双向同步**。 |
+| `syncOnAgentIdle` | `true` | **Agent 停止时**触发一次完整同步（主要上传时机，见下）。 |
+| `agentIdleDelaySeconds` | `20` | Agent 停止后的静默窗口（秒）：连续多个 Agent/子 Agent 结束会合并成一次。 |
+| `autoSync` | `true` | 每 `autoSyncIntervalSeconds` 对每个启用 target 执行**完整双向同步**（兜底）。 |
 | `syncOnStart` | `true` | 启动后 **8 秒**触发一次完整同步（错开启动高峰）。 |
+| `autoSave` | `false` | 每 `autoSaveIntervalSeconds` 扫描本地；有变更则**只上传不拉取**。默认关闭：上传已经由「Agent 停止」负责，再按间隔推只会在 turn 进行中抢带宽。 |
 | `autoSaveIntervalSeconds` | `20` | 自动保存间隔（秒）。 |
-| `autoSyncIntervalSeconds` | `180` | 自动同步间隔（秒）。 |
+| `autoSyncIntervalSeconds` | `1800` | 兜底同步间隔（秒）。 |
 | `maxFileBytes` | `33554432`（32 MiB） | 单文件上限；超限文件不进入快照并记日志。 |
+
+### 7.1 上传时机：Agent 停止时
+
+宿主在每次 turn 收尾时发 `agent/status`（`idle` ⇄ `running`）。插件监听它，**只在 `idle` 时**排一次同步：
+
+- 此时对话记录与文件都已落盘，上传的是完整状态，不会传到半截。
+- `agentIdleDelaySeconds` 内多次结束（多会话、子 Agent）合并成一次，不重复上传。
+- 正在同步时又有 Agent 停止：不叠加，记一个待补跑标记，本轮结束后自动再跑一次。
+- `session/flush`（会话已持久化）作为同一个 debounce 的兜底触发。
+
+所以默认配置下，**自动上传发生在 Agent 停止之后**，而不是按固定间隔在 turn 进行中抢带宽。
 
 行为约定：
 
@@ -429,6 +445,36 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 - `warning`：未写入时的原因，例如「归档里的路径在本机没有对应位置，未写入任何文件（N 个根未匹配，例如 /home/a/.dsh）」。
 
 > **安全提醒**：完整应用数据**包含账号凭据**。归档落在 `$DSH_HOME/dsh-sync/exports/`，只有你主动下载/上传它才会离开这台机器。请当作密码文件对待，不要放到公开位置。设置项 `backupSecrets: false` 可关掉（关掉后新设备需要重新登录）。
+
+---
+
+### 8.4 去重、真实速度与云端回收
+
+**去重**：对象按内容寻址（`objects/<sha256>`）。同内容在远端已经存在时**一个字节都不传**，
+`stats.skippedUploads` 记跳过个数，`stats.dedupeSavedBytes` 记省下的字节，设置页显示「去重省下 X」。
+
+**真实速度**：`bytesPerSecond` 只用**真正过网**的字节算（`wireBytesUp + wireBytesDown / 秒`）。
+去重跳过的对象没有走网络，不计入分母——否则会得出一个漂亮但不存在的高速。
+逻辑量（`bytesUp`）单独保留，并用 `dedupeSavedBytes = bytesUp - wireBytesUp` 解释差从哪来。
+上传对象默认 gzip 压缩，`wireBytesUp` 是压缩后的字节，也就是真实流量。
+
+**云端回收**：文件每改一次就多一个对象，旧对象不再被任何 manifest 引用，但没人删。
+本机实测（123pan，`/dsh-sync`）：
+
+| 项 | 数值 |
+|---|---|
+| 对象总数 | 493 个 / ≈1.58 GB |
+| 仍被设备 manifest 引用 | 82 个 / ≈69 MB |
+| 可回收（无引用） | 412 个 / **1,655,533,352 字节（1.54 GiB）** |
+| 预演耗时 | 9060 ms |
+
+`POST /dsh-sync/api/prune`：
+
+- 默认**只预演**（`{}`），返回 `objects` / `referenced` / `removable` / `removableBytes` / `missingReferenced`，不删任何东西。
+- `{"apply":true}` 才真删，返回 `removed` / `freedBytes` / `bytesPerSecond`。
+- 保守规则：引用集合来自**所有**设备 manifest；一个都读不到就整轮放弃；引用集合为空也拒绝执行。
+- 设置页「云端回收」按钮两步走：先预演，再显示「确认删除 N 个对象（X）」。
+- 回收**不影响**任何设备的数据：被引用的对象一律保留，下次同步也不会因此 404。
 
 ---
 

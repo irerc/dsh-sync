@@ -143,11 +143,13 @@ key = `${rootId}/${relativePosixPath}`
 {
   "version": 1,
   "deviceName": "phone",
+  "syncOnAgentIdle": true,
+  "agentIdleDelaySeconds": 20,
   "autoSync": true,
-  "autoSave": true,
+  "autoSave": false,
   "syncOnStart": true,
   "autoSaveIntervalSeconds": 20,
-  "autoSyncIntervalSeconds": 180,
+  "autoSyncIntervalSeconds": 1800,
   "maxFileBytes": 33554432,
   "concurrency": 4,
   "compressObjects": true,
@@ -318,8 +320,9 @@ Peer 路由必须校验 `x-dsh-sync-token === config.peerToken`，否则 401。
 {
   "ok": true,
   "deviceId": "...", "deviceName": "phone",
-  "autoSync": true, "autoSave": true, "syncOnStart": true,
-  "autoSaveIntervalSeconds": 20, "autoSyncIntervalSeconds": 180,
+  "syncOnAgentIdle": true, "agentIdleDelaySeconds": 20,
+  "autoSync": true, "autoSave": false, "syncOnStart": true,
+  "autoSaveIntervalSeconds": 20, "autoSyncIntervalSeconds": 1800,
   "maxFileBytes": 33554432,
   "roots": [ { "id":"profile", "label":"DSH 配置", "path":"/root/.dsh/profiles/web", "enabled":true, "exclude":["..."] } ],
   "targets": [ {
@@ -397,11 +400,31 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 
 ## 10. 自动保存 / 自动同步（Lead 实现）
 
-- `autoSave`：每 `autoSaveIntervalSeconds` 扫描本地；有变更则对每个启用 target 执行 push（不拉取）。
-- `autoSync`：每 `autoSyncIntervalSeconds` 对每个启用 target 执行完整双向同步。
+- `syncOnAgentIdle`（**主要上传时机**）：宿主 `agent/status` 变为 `idle` 时排一次完整同步。
+  此时 turn 已收尾、对话与文件都已落盘，上传完整且不与运行中的 turn 抢带宽。
+  `agentIdleDelaySeconds` 为 debounce 窗口，多次结束合并成一次；`session/flush` 作为同一个 debounce 的兜底。
+  同步进行中又有 `idle`：不并行叠加，置 `pendingIdleSync`，本轮 `finally` 里补跑一次。
+- `autoSync`：每 `autoSyncIntervalSeconds` 对每个启用 target 执行完整双向同步（兜底，默认 1800s）。
 - `syncOnStart`：启动后 8s 触发一次完整同步（错开启动高峰）。
+- `autoSave`（默认 **关**）：每 `autoSaveIntervalSeconds` 扫描本地；有变更则 push（不拉取）。
+  默认关闭的理由：上传已由 `syncOnAgentIdle` 承担，按固定间隔推只会在 turn 进行中抢带宽。
 - 所有自动任务串行化；失败只记日志，不得抛到进程。
-- `apply` 卸载时必须清理所有 timer/listener。
+- `apply` 卸载时必须清理所有 timer/listener（含 idle debounce timer）。
+
+### 10.1 真实速度口径
+
+- `bytesPerSecond = (wireBytesUp + wireBytesDown) / (durationMs/1000)`，**只算真正过网的字节**。
+- 去重跳过的对象不产生网络流量，不计入分母；否则会报出不存在的高速。
+- `dedupeSavedBytes = bytesUp - wireBytesUp` 解释逻辑量与实际流量的差。
+- 上传对象默认 gzip：`wireBytesUp` 是压缩后字节，即真实流量。
+
+### 10.2 云端回收（prune）
+
+- 对象按内容寻址，改一次多一个对象；不被任何设备 manifest 引用的即垃圾。
+- `POST /dsh-sync/api/prune`：默认预演（不删），`{"apply":true}` 才删除。
+- 保守规则：引用集合取自**所有**设备 manifest；读不到任何一个或集合为空时整体放弃。
+- 后端能力：`listObjectStats()`（带大小）与 `deleteObject(hash)`；缺失则该目标不支持回收。
+- 本机实测 123pan：493 对象中仅 82 个被引用，可回收 412 个 / 1,655,533,352 字节（1.54 GiB）。
 
 ## 11. 验收（每项必须有命令与输出证据）
 
@@ -418,6 +441,25 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 - 每个交付必须附：改动文件清单 + 运行命令 + 真实输出摘要 + 已知限制。
 - 不确定的实现选择写进 `NOTES-<name>.md`，不要静默猜测。
 ## 13. 口径修订（CHANGELOG）
+
+- 2026-11-14（1.9.0，Agent 停止即上传 + 真实速度 + 云端回收）：
+  - **上传时机改为 Agent 停止**：监听宿主 `agent/status`（`AgentStatus = 'idle' | 'running'`），
+    只在 `idle` 排同步；`session/flush` 作为同一 debounce 的兜底。`agentIdleDelaySeconds`
+    把连续多次结束合并成一次；忙时置 `pendingIdleSync`，在 `sync()` 的 `finally` 补跑，
+    不并行叠加、不丢。`autoSave` 默认改为 `false`、`autoSyncIntervalSeconds` 默认 1800s：
+    按固定间隔在 turn 中推送与"只在停止时上传"直接冲突。
+  - **真实速度口径**：`bytesPerSecond` 改为 `(wireBytesUp + wireBytesDown) / 秒`，
+    去重跳过的对象不产生流量、不计入分母（旧算法用 `bytesUp + bytesDown`，会报出不存在的高速）。
+    新增 `dedupeSavedBytes = bytesUp - wireBytesUp` 与 `logicalBytesPerSecond`。
+  - **云端回收**：新增 `SyncEngine.pruneRemote({apply})` + `POST /dsh-sync/api/prune`。
+    对象按内容寻址、旧版本无人回收；保守规则（引用集合取自全部 manifest，读不到或为空则放弃）。
+    后端新增可选能力 `listObjectStats()`（带大小）与 `deleteObject(hash)`；
+    `listObjects()` 保持 `string[]` 契约（peer 协议 `/v1/objects` 依赖它）。
+    实测 123pan：493 对象 / 82 被引用 / 可回收 412 个 / 1,655,533,352 字节（1.54 GiB）。
+  - **WebDAV 兼容修复**：`ensureCollection()` 把 `423 Locked` / `301` / `409` 与 `405` 一并
+    视为"集合已存在"。123pan 对已存在集合返回 **423**，插件重载后 init 缓存清空即失败
+    （`MKCOL ... 423 Locked`）。
+  - 设置页新增「云端回收」两步按钮（先预演、再确认删除）与「去重省下 X」chip。
 
 - 2026-11-14（1.8.0，完整应用数据 + 流式归档）：
   - 新增 `scope=app`（`POST /dsh-sync/api/export` body `{"scope":"app"}`）：根 = `dsh-home`

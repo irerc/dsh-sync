@@ -143,6 +143,8 @@ export async function startMockWebdav(options = {}) {
     realm = 'dsh-sync-test',
     maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
     autoCreateParents = true,
+    // 已存在集合时 MKCOL 的状态码：RFC 是 405，123pan 实测 423 Locked。
+    mkcolExistingStatus = 405,
     host = '127.0.0.1',
     port = 0,
   } = options
@@ -270,7 +272,7 @@ export async function startMockWebdav(options = {}) {
         return
       }
       if (dirs.has(key) || files.has(key)) {
-        send(req, res, 405, 'already exists', { 'content-type': 'text/plain; charset=utf-8' })
+        send(req, res, mkcolExistingStatus, 'already exists', { 'content-type': 'text/plain; charset=utf-8' })
         return
       }
       const parent = parentKey(key)
