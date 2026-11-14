@@ -14,7 +14,7 @@ import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { gunzipSync, gzipSync } from 'node:zlib'
 
-import { buildArchive, parseArchive, __splitUstarPath } from '../lib/engine/archive.js'
+import { buildArchive, buildArchiveStream, parseArchive, __splitUstarPath } from '../lib/engine/archive.js'
 
 /* ------------------------------------------------------------------ */
 /* 测试辅助                                                            */
@@ -713,3 +713,60 @@ test('14) 0 字节文件：size=0 成员往返，sha256 为 e3b0c442…', async 
   // 数据长度 0 时成员只占一个头部块，归档整体仍是 512 的整数倍。
   assert.equal(gunzipSync(archive.bytes).length % 512, 0)
 })
+
+test('流式导出与内存导出逐字节一致（同样的输入必须产出同样的归档）', async () => {
+  const payload = Buffer.from('流式导出等价性\n'.repeat(500), 'utf8')
+  const hash = createHash('sha256').update(payload).digest('hex')
+  const manifest = manifestFor([entryFor('profile/notes.txt', hash, payload.length)])
+
+  // 两侧都用同一个冻结时间，否则 manifest.generatedAt 天然不同，比不出字节一致。
+  const realNow = Date.now
+  Date.now = () => 1700000000000
+  let inMemory
+  const chunks = []
+  let streamed
+  try {
+    inMemory = await buildArchive({ manifest, readObject: async () => payload })
+    streamed = await buildArchiveStream({
+      manifest,
+      readObject: async () => payload,
+      write: async (chunk) => { chunks.push(Buffer.from(chunk)) },
+    })
+  } finally {
+    Date.now = realNow
+  }
+
+  const streamedBytes = Buffer.concat(chunks)
+  assert.equal(streamedBytes.length, inMemory.bytes.length, '字节数必须一致')
+  assert.ok(streamedBytes.equals(Buffer.from(inMemory.bytes)), '内容必须逐字节一致')
+  assert.equal(streamed.size, inMemory.size)
+  assert.equal(streamed.sha256, inMemory.sha256, 'sha256 必须一致')
+
+  // 流式产物必须能被正常解析回来。
+  const parsed = await parseArchive(streamedBytes)
+  assert.equal(parsed.manifest.entries.length, 1)
+  assert.ok(Buffer.from(parsed.objects.get(hash)).equals(payload))
+})
+
+test('流式导出：对象按需读取，不会预先全部载入', async () => {
+  const a = Buffer.from('A'.repeat(1024), 'utf8')
+  const b = Buffer.from('B'.repeat(1024), 'utf8')
+  const ha = createHash('sha256').update(a).digest('hex')
+  const hb = createHash('sha256').update(b).digest('hex')
+  const manifest = manifestFor([
+    entryFor('root/a.txt', ha, a.length),
+    entryFor('root/b.txt', hb, b.length),
+  ])
+  const order = []
+  await buildArchiveStream({
+    manifest,
+    readObject: async (hash) => {
+      order.push(hash)
+      return hash === ha ? a : b
+    },
+    write: async () => {},
+  })
+  // 按 hash 升序读取，且每个对象只读一次（读两次说明没做惰性/去重）。
+  assert.deepEqual(order, [ha, hb].sort())
+})
+

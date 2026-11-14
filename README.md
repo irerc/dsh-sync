@@ -374,6 +374,53 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 
 旧版归档没有 `roots` 字段，导入仍按原来的「只认 id」行为处理，向后兼容。
 
+### 8.3 完整应用数据（换设备后和原机一样）
+
+「完整备份」装的是工作区与对话；「**完整应用数据**」装的是 DSH 这个应用本身。设置页按钮为「完整应用数据」（`POST /dsh-sync/api/export`，body `{"scope":"app"}`）。
+
+目标很具体：**新设备装好 DSH、导入这一份、跑一次依赖安装，用起来和这台机器一样。**
+
+进包的内容：
+
+| 内容 | 位置 | 为什么必须带 |
+|---|---|---|
+| 会话与对话记录 | `$DSH_HOME/sessions` | 对话历史就是工作成果 |
+| 存储与登记 | `$DSH_HOME/storages`（去掉原生库/venv/投影缓存） | 工作区登记、账号表、聊天映射 |
+| 账号凭据 | `$DSH_HOME/.credentials.yaml` 等 | 不带就得重新登录，谈不上「一样」 |
+| 偏好与插件状态 | `$DSH_HOME/*.json`、`profiles/<profile>/**`（去掉 `node_modules`） | 插件启用状态、模型设置、编排 |
+| 附件 | `$DSH_HOME/attachments` | 对话里的图片/文件 |
+| 自有插件源码 | profile `package.json` 里所有 `link:` 依赖的真实路径（本机 17 个，约 11 MB） | 这些插件不在 npm 上，新设备没有源码就没有功能 |
+
+**故意不进包**（可重建，带了只会变大变慢，且不可能逐字节一致）：`node_modules`、`mobile-access/components`（cloudflared/cpolar）、`storages/*/native-libs`、`storages/*/native-venv`、`cache`、`logs`、`plugin-install-operations`、`session-move-backup`、`session_projcache`、`*.bak-*`，以及同步存储自身 `dsh-sync/`（否则就是备份再备份，且体积自我膨胀）。
+
+实测（本机，18 个根）：**121 MiB / 809 个文件 / 14.6 秒**。
+
+#### 恢复步骤（归档里自带说明，不用另找文档）
+
+归档额外带三个成员，老版本客户端导入时会当作未知成员忽略，所以不影响向后兼容：
+
+- `restore.json`：机读的恢复计划（原机 DSH 版本、profile 目录、17 个 link 源码路径、4 个步骤）；
+- `RESTORE.md`：人读说明；
+- `restore.sh`：可直接执行——先检查 link 源码是否在原路径，缺了就报错退出，然后 `pnpm install --frozen-lockfile`。
+
+1. 新设备装同版本 DSH（本机 `0.2.2-rc.1` 由插件自动探测并写进 `restore.json`）；
+2. 设置页「导入」选这个归档；
+3. `bash restore.sh`（或手工 `cd <profile> && pnpm install --frozen-lockfile`）；
+4. 重启 DSH。
+
+#### 换设备时 DSH_HOME 路径不同也能恢复
+
+`dsh-home` 这个根**不做路径匹配**：归档里无论原机 home 在哪，导入时一律落到**本机** `$DSH_HOME`。这是「新设备装完即等同原机」的关键——换机器时 home 路径本来就可能不同。
+
+其余根（自有插件源码）仍走 §8.2 的路径规则：路径在可信父目录内就补建，否则拒绝。
+
+导入结果新增两个字段，避免「导入成功但什么都没恢复」被误判：
+
+- `applied`：是否真的写入了文件（全部跳过时为 `false`）；
+- `warning`：未写入时的原因，例如「归档里的路径在本机没有对应位置，未写入任何文件（N 个根未匹配，例如 /home/a/.dsh）」。
+
+> **安全提醒**：完整应用数据**包含账号凭据**。归档落在 `$DSH_HOME/dsh-sync/exports/`，只有你主动下载/上传它才会离开这台机器。请当作密码文件对待，不要放到公开位置。设置项 `backupSecrets: false` 可关掉（关掉后新设备需要重新登录）。
+
 ---
 
 ## 9. Agent 工具
@@ -413,6 +460,7 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 - 每个 root 可追加 `exclude` 数组，支持 `*`、`?`、`**`，例如 `node_modules/**`、`**/*.log`、`*.bak-*`。
 - 默认 profile root 已排除 `node_modules/**`、`.plugin-manager/**`、`*.bak-*`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`package.json`；文档 root（默认停用）额外排除 `.git/**`、`**/*.zip`、`**/*.tar.gz`。
 - 排除是**路径匹配**，不是内容扫描；不要指望它发现改了扩展名的密钥文件。
+- 凭据文件（`.credentials.yaml`、`credentials.key`、`cookies*`、`*.key`、`*.pem`、`id_rsa*`）在 `$DSH_HOME` 内**默认被拦掉**。只有「完整应用数据」用的那个根带 `includeSecrets: true` 才会放行（§8.3），普通同步与 `full` 备份仍然不带凭据。
 
 ### 10.4 大小与路径安全
 

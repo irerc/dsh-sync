@@ -419,6 +419,31 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 - 不确定的实现选择写进 `NOTES-<name>.md`，不要静默猜测。
 ## 13. 口径修订（CHANGELOG）
 
+- 2026-11-14（1.8.0，完整应用数据 + 流式归档）：
+  - 新增 `scope=app`（`POST /dsh-sync/api/export` body `{"scope":"app"}`）：根 = `dsh-home`
+    （`$DSH_HOME`）+ profile `package.json` 里每个 `link:` 依赖的真实目录。目标是**新设备导入后
+    与当前设备一致**，因此这次与 `roots`/`full` 的语义差别是"装应用"而不是"装文件"。
+  - 新增 `lib/engine/appdata.js`：`APP_HOME_EXCLUDES`（可重建内容一律不进包：`node_modules`、
+    `mobile-access/components`、`storages/*/native-libs`、`native-venv`、`cache`、`logs`、
+    `plugin-install-operations`、`session-move-backup`、`session_projcache`、`*.bak-*`、
+    `dsh-sync/**` 自身）、`LINK_EXCLUDES`、`appDataRoots()`、`detectLinkSources()`、
+    `buildRestorePlan()`、`renderRestoreDoc()`、`renderRestoreScript()`、`detectDshVersion()`。
+  - 扫描器支持 `root.includeSecrets`：完整应用数据要带账号凭据，否则新设备必须重新登录，
+    达不到"一样"。默认 `backupSecrets: true`；普通同步与 `full` 备份仍套 `SECRET_PATTERNS`。
+  - 归档新增三个附加成员 `restore.json` / `RESTORE.md` / `restore.sh`，由
+    `buildArchiveStream({extraMembers})` 写入。`parseArchive` 原就把 `objects/` 之外的成员
+    计入 `ignored`，所以旧客户端导入不报错，向后兼容。
+  - **流式导出**：`buildArchiveStream()`（tar → gzip 流 → 落盘，增量 sha256）替代
+    `buildArchive()` + 全量 `Buffer.concat` + `gzipSync`。引擎侧不再把对象内容攒进内存，
+    只保留 `hash → 绝对路径`，打包时按需重读。此前完整应用数据（本机 121 MiB / 809 文件）
+    会同时持有 2–3 份大缓冲；实测流式导出 14.6 s，与内存版输出**逐字节一致**（含单测）。
+  - 落盘先写 `.part` 再 `rename`，中途失败不会留下半截归档冒充完整备份。
+  - 导入：`dsh-home` 根**按本机 `$DSH_HOME` 重定位**（不做路径匹配），换机 home 路径不同也能还原；
+    其余根仍走 §8.2 的路径/补建规则。导入结果新增 `applied`、`warning`、`unmatchedRoots`：
+    全部跳过时 `ok` 仍表示流程无错，但 `applied:false` 明确"一个文件都没写"。
+  - 设置页新增「完整应用数据」按钮（`transfer.exportApp` / `transfer.exportAppHint`，zh/en 各一套）。
+    顺手修掉既有 bug：`full` 导出时主导出按钮也显示"导出中"。
+
 - 2026-11-14（1.7.0，默认 WebDAV + 双向实时速率）：
   - `defaultTargets` 改为 **WebDAV 排第一**，`local`/`peer` 默认关闭。WebDAV 默认 `enabled:false`：
     `normalizeTarget` 已拒绝「启用但没有地址」的目标（`lib/config.js:193`），预置启用会得到非法配置。
