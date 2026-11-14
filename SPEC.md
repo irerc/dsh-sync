@@ -415,6 +415,26 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
 - 不确定的实现选择写进 `NOTES-<name>.md`，不要静默猜测。
 ## 13. 口径修订（CHANGELOG）
 
+- 2026-11-13（1.6.0，快速开始易用性）：
+  - `WebdavQuickCard` 从设置页**第一张卡**移到 `SyncSection` **末尾**（活动日志卡之后）。
+  - 默认折叠：已有 WebDAV target 时折叠并显示 `已连接 {url} · 账号 {user}`；无 target 时展开。
+    折叠判定**只在 `status` 首次到达时做一次**（`initializedRef`），否则首帧空 `status`
+    会把默认值定成“展开”，之后不再重新求值。
+  - `status` 未到达（未判定）时按展开渲染并禁用切换按钮、不渲染摘要 chip，避免“已配置”的错觉。
+  - 记住凭据：地址/账号取自 `GET /api/status` 的 `targets[]`（非密字段）；密码位固定 `***`。
+    提交时 `password === '' || '***'` 且已有 target → 发送 `'***'`，由
+    `engine.connectTarget`（`lib/engine/engine.js:183`）还原为已存密码；接口回传始终为 `***`。
+  - `basePath` 沿用已存 target 的自定义子路径，不再硬写 `/dsh-sync`。
+  - 连接成功后自动收起并把密码位重置为 `***`。
+  - 折叠时不渲染表单（避免隐藏字段仍在 Tab 序内），但保留空的 `#dsync-quick-panel` 容器，让
+    `aria-controls` 指向真实节点。
+
+- 2026-11-13（1.5.0，设置页易用性）：状态卡新增**网速小 tag**与状态动画。
+  - 同步中：呼吸圆点 + `同步中 {seconds}s`（每秒计时）+ 不定进度条（`role=progressbar`、`aria-valuetext` 带秒数）；
+  - 空闲：`↑ {实传字节} · {平均速率}/s`，取自 `wireBytesUp` 与 `bytesPerSecond`，无数据时不渲染；
+  - 结果 chips 淡入；`prefers-reduced-motion: reduce` 时禁用全部动画并把进度条退化为静态宽度。
+  - 不新增后端字段、不引入进度轮询：动画只用已有 `busy` 与 `lastResult`，避免为“动效”增加请求。
+
 - 2026-11-13（1.4.1，独立复核修复）：
   - Peer `writeObject` 并发去重的后来者改为返回 `{skipped:true, storedBytes:0}`；此前返回首调用的完整
     `storedBytes`，`wireBytesUp` 会按调用次数虚增（实测 5 并发：实际 100B 记成 500B）。

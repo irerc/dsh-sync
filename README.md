@@ -66,16 +66,16 @@ DSH（DeepSeek Harness）的多设备同步插件：把**用户选定的本地�
 | 方式 | URL | 适用网络 |
 |---|---|---|
 | GitHub git | `https://github.com/irerc/dsh-sync.git` | 能访问 `github.com:443` |
-| codeload tag tarball | `https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.4.1` | `github.com` 被阻断但 `codeload.github.com` 可达；pnpm 可直接安装 |
-| Release 资产 | `https://github.com/irerc/dsh-sync/releases/download/v1.4.1/dsh-sync-1.4.1.tgz` | 能访问 `github.com`；也可手动下载后在本地安装 |
-| raw tarball（GUI 兼容） | `https://raw.githubusercontent.com/irerc/dsh-sync/main/dist/dsh-sync-1.4.1.tgz` | `github.com` 被阻断但 `raw.githubusercontent.com` 可达；URL 以 `.tgz` 结尾，插件管理器可直接识别 |
+| codeload tag tarball | `https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.6.0` | `github.com` 被阻断但 `codeload.github.com` 可达；pnpm 可直接安装 |
+| Release 资产 | `https://github.com/irerc/dsh-sync/releases/download/v1.6.0/dsh-sync-1.6.0.tgz` | 能访问 `github.com`；也可手动下载后在本地安装 |
+| raw tarball（GUI 兼容） | `https://raw.githubusercontent.com/irerc/dsh-sync/main/dist/dsh-sync-1.6.0.tgz` | `github.com` 被阻断但 `raw.githubusercontent.com` 可达；URL 以 `.tgz` 结尾，插件管理器可直接识别 |
 
 本机（`github.com:443` 被阻断、`codeload.github.com` 可达）实测通过的 CLI：
 
 ```bash
-dsh plugin --profile web add https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.4.1
+dsh plugin --profile web add https://codeload.github.com/irerc/dsh-sync/tar.gz/refs/tags/v1.6.0
 # 或：raw tarball（GUI 安装也接受这个 URL）
-dsh plugin --profile web add https://raw.githubusercontent.com/irerc/dsh-sync/main/dist/dsh-sync-1.4.1.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/irerc/dsh-sync/main/dist/dsh-sync-1.6.0.tgz
 ```
 
 > `v4.gh-proxy.org` 的 git 只读 `ls-remote` 可用，但 `git clone` 实测返回 403；因此**优先用 codeload tarball**，不要依赖镜像 clone。
@@ -105,7 +105,7 @@ dsh web
 
 > 说明：`dsh plugin ... add` 只负责依赖安装；**组合包启用状态**需要在插件页选择，或由 `plugin_manager` 工具设置。安装/启用属于宿主操作，本插件不会自行修改 profile 配置。
 
-升级：重新执行安装（git 地址拉取最新提交；tarball 地址换成新 tag），或替换本地目录后重装/重启。需要固定版本时用 tag：`.../tar.gz/refs/tags/v1.4.1`。配置与状态保存在 `$DSH_HOME/dsh-sync/`，不受升级影响。
+升级：重新执行安装（git 地址拉取最新提交；tarball 地址换成新 tag），或替换本地目录后重装/重启。需要固定版本时用 tag：`.../tar.gz/refs/tags/v1.6.0`。配置与状态保存在 `$DSH_HOME/dsh-sync/`，不受升级影响。
 
 ---
 
@@ -113,7 +113,15 @@ dsh web
 
 ### 4.0 最快路径：WebDAV 只填三项
 
-设置页**最上方**是「WebDAV 快速开始」：只填 **地址、账号、应用密码**，点「连接并同步」。子路径自动使用 `/dsh-sync`，target 名默认 `WebDAV`；保存后自动测试连接并立即同步，结果就地显示上传/下载/冲突/错误数。同一地址+账号再次提交是**更新**，不会重复新增。
+「WebDAV 快速开始」在设置页**最底部**（老用户不需要它，但新用户仍能一眼找到）：只填 **地址、账号、应用密码**，点「连接并同步」。子路径自动使用 `/dsh-sync`，target 名默认 `WebDAV`；保存后自动测试连接并立即同步，结果就地显示上传/下载/冲突/错误数。同一地址+账号再次提交是**更新**，不会重复新增。
+
+连接成功后会**记住**这次填的网址与账号：
+
+- 卡片默认**折叠**，只显示一行 `已连接 https://… · 账号 …` 和「展开」按钮；
+- 展开后地址/账号已预填，密码位显示 `***`——**保持 `***` 不动就是沿用已保存的密码**，不需要每次重输；
+- 成功一次后卡片自动收起，不占版面；还没有任何 WebDAV target 时则默认展开，新用户不用先找按钮。
+
+> 密码只保存在本机 `config.json`（0600），设置页接口回给浏览器的永远是 `***`，不会回显明文。
 
 
 ### 4.1 上传速度与流量（1.4.0）
@@ -131,13 +139,19 @@ dsh web
 - **并发传输数**（1–16）：局域网千兆可调到 8；移动网络或服务端限流时降到 2。
 - **上传压缩**（默认开）：内网直连且 CPU 弱可关，否则建议保持开启。
 
+状态卡还会直接给出**网速小 tag**与进度动画：
+
+- 同步中：呼吸圆点 + `同步中 12s`，下方一条不定进度条（不谎报百分比，因为没有逐字节进度事件）；
+- 同步结束：`↑ 3.3 MiB · 0.9 MB/s`，即上次的实传字节与平均速率（悬停有说明）；
+- 结果 chips 淡入；`prefers-reduced-motion` 下全部动画自动关闭，进度条退化为静态条。
+
 同步日志会显示吞吐与实传字节，例如：
 
 ```text
 [dav] auto 同步完成：↑200 ↓0 … 去重跳过3，实传0.832 MiB（9098ms，90 KiB/s）
 ```
 
-> 兼容性：`objects/<hash>.z` 是新形态。旧版本（≤1.3.0）设备读不到 `.z` 对象，**请把所有设备升级到 1.4.1**；
+> 兼容性：`objects/<hash>.z` 是新形态。旧版本（≤1.3.0）设备读不到 `.z` 对象，**请把所有设备升级到 1.6.0**；
 > 新版本仍能读写 1.3.0 遗留的 `objects/<hash>` 原始对象。
 
 设置页入口：**设置 → dsh-sync**（`settings.section`，order 60）。页面分六块：

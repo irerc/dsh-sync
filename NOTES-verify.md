@@ -484,3 +484,52 @@ UI：`Targets` 类型下拉与列表均 WebDAV 优先；每个 WebDAV/peer targe
 发布元数据澄清（archive-dev 提出）：本地 HEAD 与远端 commit 哈希必然不同——推送走 Git Data API（`github.com:443` 被阻断），
 服务端重算 commit sha，本地是 `743eda8`、远端是 `781de3fa`，内容一致（`raw` 拉取 `package.json` 得到 1.4.0）。
 1.4.1 起同样处理，并在本地补打 tag 以便 `git describe` 可用。
+
+### 15.8 设置页易用性（1.5.0，未推送）
+
+需求：加网速小 tag、加状态动画。
+
+| 改动 | 位置 | 说明 |
+|---|---|---|
+| 网速小 tag | `lib/client.js` StatusCard `speedTag` | 同步中：呼吸圆点 + `同步中 {s}s`（每秒 tick）；空闲：`↑ {size} · {rate}/s`（`wireBytesUp` + `bytesPerSecond`），无数据显示时不渲染 |
+| 不定进度条 | `dsync-syncbar` | `role=progressbar` + `aria-valuetext` 含已用秒数；不谎报百分比（无逐字节进度事件），也不为动画新增轮询请求 |
+| 动画 | CSS keyframes | `dsync-fadeIn`（chips 淡入）、`dsync-breathe`（busy chip 呼吸）、`dsync-pulse`（圆点）、`dsync-slide`（进度条）；`prefers-reduced-motion: reduce` 全关并退化为静态条 |
+| 计时器 | `React.useEffect` | `busy` 变化时启动/清理 interval，卸载即清理，无泄漏 |
+| 主题变量 | 复用 | `--dsw-alias-brand-primary` 在 DSH 客户端插件中确有 11 处使用；新规则仍带 fallback，缺失也不会出现透明样式 |
+
+验证（本条受限于当前无浏览器会话）：
+
+| 检查 | 结果 |
+|---|---|
+| 语法 | `node --check lib/client.js` 通过 |
+| 全量测试 | `node --test test/*.test.mjs` → **97/97** |
+| i18n 对称 | 205 key × 2（zh/en），无重复、无单侧缺失 |
+| 主题变量存在性 | 在 DSH 客户端插件 bundle 中 grep 到 `--dsw-alias-brand-primary`（11 次） |
+| 未验证 | 实际渲染/动画观感：Client Inspect 返回 “no connected Harness page”，等页面打开后需人工确认一次 |
+
+版本：`package.json` → 1.5.0（新功能，非补丁）。**按用户要求：未经允许不推送、不发 Release**，本地 `dist/dsh-sync-1.5.0.tgz` 仅备用。
+
+### 15.9 WebDAV 快速开始：记住凭据 / 移到底部 / 默认折叠（1.6.0）
+
+需求原话：「进行完一次 WebDAV 快速开始以后，将账号密码和网址保存，并且将快速开始页面放到最下面并且折叠」
+
+| 要求 | 实现 | 验证 |
+|---|---|---|
+| 记住网址/账号 | 从 `GET /api/status` 的 `targets[]`（非密字段）预填，按 `url+username` 指纹去重，不会覆盖用户正在编辑的输入 | 线上 status 确认 `dav` 暴露 `url`/`username`/`basePath` |
+| 记住密码 | 密码位固定 `***`；提交时 `''`/`***` → 发 `'***'`，由 `engine.connectTarget:183` 还原为已存密码 | **真实链路**：对线上 `dav` 提交 `password:'***'` → 配置里 `len=8`、`sha b8a61f05fbd9` 与提交前**完全一致**，未出现字面量 `***`，且 `test.ok=true`（密码有效才可能连通 123pan） |
+| 移到最下面 | 从 `SyncSection` 第一张卡移到 `LogsCard` 之后、footer 之前 | 结构断言 `quick after logs: True` |
+| 默认折叠 | 有 target 折叠 + 摘要 chip；无 target 展开 | 逻辑仿真三场景：有 target→`expanded=false`；无 target→`true`；仅停用 target→`false` 且预填 |
+| 成功后收起 | 成功分支 `setPassword('***')` + `setExpanded(false)`，位于两处失败 `return` 之后 | 代码路径核对（行 45–46） |
+
+踩坑与处理：
+
+1. **首帧 `status` 为空**会让 `useState(() => hasSaved)` 定成“展开”且不再重算 → 改用 `expanded=null` 表示未判定，
+   仅在 `status` 首次到达时判定一次（`initializedRef`），之后不覆盖用户手动操作。
+2. **未判定态**若渲染成折叠，会先闪出“已配置”的错觉 → 未判定时按展开渲染、禁用切换按钮、不渲染摘要 chip。
+3. **写坏密码是静默事故**：`***` 若被当真实密码写入，用户下次连不上且无报错 → 新增回归用例断言
+   内存 `store.config`、磁盘 `config.json` 都是原密码，且接口回传仍是 `***`。
+
+测试：`node --test test/*.test.mjs` → **97/97**；`test/http-api.test.mjs` → 3/3（含新增 `***` 还原用例）。
+i18n：212 key × zh/en 对称，`not-exactly-2: none`。
+
+未验证：实际渲染观感（折叠/展开的视觉、动画）需在浏览器刷新后人工确认。

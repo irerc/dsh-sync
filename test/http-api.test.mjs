@@ -269,6 +269,29 @@ test('HTTP API：状态/配置掩码/测试/同步/导出下载/导入/同源', 
   const files = await fsp.readdir(device.root)
   assert.ok(files.some((name) => name.includes('.conflict-local-')))
 
+  // 快速开始「记住密码」：已有 target 再提交 password:'***' 必须沿用已存密码，不能写成字面量 ***
+  const reQuick = await call(harness.origin, '/dsh-sync/api/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      type: 'webdav',
+      url: 'https://dav.example.com/remote.php/dav/files/u',
+      username: 'u',
+      password: '***',
+      basePath: '/dsh-sync',
+      sync: false,
+    }),
+  })
+  assert.equal(reQuick.status, 200)
+  const savedDav = device.store.config.targets.find((item) => item.id === 'dav')
+  assert.ok(savedDav, '应原地更新已存在的 dav target')
+  assert.equal(savedDav.password, 'secret-token', '`***` 必须还原为已保存密码，不能写成字面量')
+  // 磁盘上的配置也要是真实密码（防止只在内存里对）
+  const onDisk = JSON.parse(await fsp.readFile(path.join(device.home, 'dsh-sync', 'config.json'), 'utf8'))
+  assert.equal(onDisk.targets.find((item) => item.id === 'dav').password, 'secret-token')
+  // status 回给 UI 的必须是掩码，不能泄漏明文
+  assert.equal(reQuick.body.status.targets.find((item) => item.id === 'dav').password, '***')
+
   // 同源校验
   const crossOrigin = await call(harness.origin, '/dsh-sync/api/config', {
     method: 'POST',
