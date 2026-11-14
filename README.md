@@ -393,7 +393,16 @@ Agent 会调用 `dsh_sync_configure`：新增 target → 测试连接 → 立即
 
 **故意不进包**（可重建，带了只会变大变慢，且不可能逐字节一致）：`node_modules`、`mobile-access/components`（cloudflared/cpolar）、`storages/*/native-libs`、`storages/*/native-venv`、`cache`、`logs`、`plugin-install-operations`、`session-move-backup`、`session_projcache`、`*.bak-*`，以及同步存储自身 `dsh-sync/`（否则就是备份再备份，且体积自我膨胀）。
 
-实测（本机，18 个根）：**121 MiB / 809 个文件 / 14.6 秒**。
+实测（本机，18 个根）：**122 MiB / 812 个文件 / 15.2 秒，峰值 RSS 227 MiB**。
+
+两条与「能不能导成功」直接相关的实现约定：
+
+- **边打包边读，不把归档攒在内存里**：扫描阶段只记 `hash → 绝对路径`，打包阶段按需重读对象，
+  tar 直接喂给 gzip 再落盘（`Readable.from` + `pipeline`）。早期版本把所有对象攒进 Map 再
+  `Buffer.concat`，完整应用数据会同时持有 2–3 份大缓冲。
+- **正在写的文件不会让整次导出失败**：归档先写对象、最后写 `manifest.json`，对象名取**实际读到
+  内容**的 hash，清单按实际 size/hash 修正（解析器收完所有成员才校验引用，成员顺序不影响解析）。
+  导出日志会说明「N 个在导出期间被改动（已按最新内容写入）」——正在追加的会话日志就属于这类。
 
 #### 恢复步骤（归档里自带说明，不用另找文档）
 

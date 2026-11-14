@@ -435,8 +435,16 @@ window.__ModuleLoader__.load({ id: 'dsh-sync', factory(require) { ... return { i
     计入 `ignored`，所以旧客户端导入不报错，向后兼容。
   - **流式导出**：`buildArchiveStream()`（tar → gzip 流 → 落盘，增量 sha256）替代
     `buildArchive()` + 全量 `Buffer.concat` + `gzipSync`。引擎侧不再把对象内容攒进内存，
-    只保留 `hash → 绝对路径`，打包时按需重读。此前完整应用数据（本机 121 MiB / 809 文件）
-    会同时持有 2–3 份大缓冲；实测流式导出 14.6 s，与内存版输出**逐字节一致**（含单测）。
+    只保留 `hash → 绝对路径`，打包时按需重读。实测 122 MiB / 812 文件 / 15.2 s，
+    **峰值 RSS 227 MiB**。
+  - 流式实现用 `Readable.from(生成器)` + `pipeline(gzip, sink)` 施加背压。**不用**
+    `once(gzip,'drain')`：gzip 在 `end()` 后不再触发 drain，会被 end-of-stream 判成
+    `ERR_STREAM_PREMATURE_CLOSE` 抛出未捕获异常（可带走宿主进程）。
+  - **成员顺序：对象在前、`manifest.json` 最后**。对象名取实际读到内容的 hash，清单按实际
+    size/hash 修正，因此扫描与打包之间被追加的文件（正在写的会话日志）不会让整次导出失败。
+    `buildArchiveStream` 返回 `changed[]`，导出日志说明"N 个在导出期间被改动"。
+    `parseArchive` 收完所有成员后才校验引用，所以顺序变化不影响解析，旧归档照常可读。
+  - 引擎 `readObject(hash, entry)` 按 `entry.key` 定位文件（同一内容可能来自多个路径）。
   - 落盘先写 `.part` 再 `rename`，中途失败不会留下半截归档冒充完整备份。
   - 导入：`dsh-home` 根**按本机 `$DSH_HOME` 重定位**（不做路径匹配），换机 home 路径不同也能还原；
     其余根仍走 §8.2 的路径/补建规则。导入结果新增 `applied`、`warning`、`unmatchedRoots`：
