@@ -324,3 +324,41 @@ test('A12 detectDshVersion：环境变量优先，取不到返回空串不编造
   assert.equal(typeof detected, 'string')
   assert.ok(detected === '' || /^\d+\.\d+/.test(detected), `版本要么空要么像版本号，实际 ${detected}`)
 })
+
+test('A13 link 源码原路径不可用时兜底到 linked-plugins（源码不能丢）', async () => {
+  const tmp = await mkTemp('appdata-relink-')
+  try {
+    const srcHome = path.join(tmp, 'a', '.dsh')
+    const pluginDir = path.join(tmp, 'a', 'my-plugin')
+    const dstHome = path.join(tmp, 'b', '.dsh')
+    await fsp.mkdir(path.join(srcHome, 'profiles', 'web'), { recursive: true })
+    await fsp.mkdir(pluginDir, { recursive: true })
+    await fsp.writeFile(path.join(srcHome, 'profiles', 'web', 'package.json'), JSON.stringify({
+      dependencies: { 'my-plugin': `link:${pluginDir}` },
+    }))
+    await fsp.writeFile(path.join(pluginDir, 'index.js'), 'export const mine = true\n')
+
+    const src = await makeDevice({ home: srcHome })
+    const exported = await src.engine.exportArchive({ scope: 'app' })
+    const bytes = await fsp.readFile(exported.path)
+
+    // 目标设备的 home 在另一个父目录下：原路径不属于可信目录，adopt 会被拒绝。
+    const dst = await makeDevice({ home: dstHome })
+    const report = await dst.engine.importArchive({ bytes, name: exported.name })
+
+    assert.equal(report.skipped, 0, '源码不该被丢弃')
+    assert.ok(Array.isArray(report.relocatedLinks) && report.relocatedLinks.length === 1, '要报告改放位置')
+    const moved = report.relocatedLinks[0]
+    assert.equal(moved.from, pluginDir)
+    assert.equal(moved.to, path.join(dstHome, 'linked-plugins', 'my-plugin'))
+    assert.equal(await fsp.readFile(path.join(moved.to, 'index.js'), 'utf8'), 'export const mine = true\n')
+    // 必须留下可操作的提示
+    assert.ok(
+      dst.store.state.logs.some((log) => log.message.includes('link:') ),
+      '要提示用户改 package.json 的 link:',
+    )
+  } finally {
+    await fsp.rm(tmp, { recursive: true, force: true })
+  }
+})
+
